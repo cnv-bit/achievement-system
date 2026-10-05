@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>成就系统 · 前端设计预览</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="./journal.css">
+  <style>
+    body{margin:0;background:#e5e2da;padding:18px 24px 10px;font-family:'Microsoft YaHei',sans-serif}
+    #journal-root{max-width:1600px;margin:auto}.preview-note{text-align:center;font-size:11px;color:#686051;margin:8px 0 0}
+    #reopen{display:block;margin:30vh auto;padding:16px 28px;background:#f3f0e7;border:1px solid #c8c1af;color:#393a34;font:inherit}#reopen[hidden]{display:none}
+    @media(max-width:767px){body{padding:6px}.preview-note{padding:8px}}
+  </style>
+</head>
+<body>
+  <div id="journal-root"></div><button id="reopen" hidden>翻开旅行手账</button>
+  <p class="preview-note">设计预览 · 示例经历与示意插画 · 编辑仅在本次预览中保留，刷新页面复原</p>
+  <script type="module" src="./.preview/demo.js"></script>
+</body>
+</html>

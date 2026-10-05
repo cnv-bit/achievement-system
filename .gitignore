@@ -1,0 +1,16 @@
+backups/
+local/
+references/upstream/_checkout/
+node_modules/
+.npm-cache/
+dist/plugin/
+dist/*.js
+experiments/*.png
+.env
+.env.*
+*.log
+content-private/
+src/content/images/*
+!src/content/images/README.md
+references/art-source/
+references/ui-concepts/

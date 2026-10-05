@@ -1,0 +1,17 @@
+{
+  "schemaVersion":1,
+  "chapters":{
+    "chapter.1":{"width":800,"height":400},
+    "chapter.2":{"width":800,"height":400},
+    "chapter.3":{"width":800,"height":400},
+    "chapter.4":{"width":800,"height":400},
+    "chapter.5":{"width":800,"height":400}
+  },
+  "storyTrees":{"storyTree.demo":{"chapterId":"chapter.1","x":0,"y":0,"width":800,"height":400,"positions":{"story.demo.start":{"x":160,"y":150},"story.demo.next":{"x":480,"y":150}}}},
+  "bondTrees":{"person.demo":{"width":800,"height":400,"positions":{"bond.demo.met":{"x":160,"y":150},"bond.demo.followup":{"x":480,"y":150}}}},
+  "careerTrees":{"career.demo":{"width":800,"height":400,"positions":{"career.demo.first":{"x":160,"y":150},"career.demo.second":{"x":480,"y":150}}}},
+  "skillTrees":{"skillTree.demo":{"width":800,"height":400,"positions":{"ability.demo.first":{"x":160,"y":150},"ability.demo.second":{"x":480,"y":150}}}},
+  "combatTrees":{"combatTree.demo":{"width":800,"height":400,"positions":{"combat.demo.first":{"x":160,"y":150}}}},
+  "knowledgeTrees":{"knowledgeTopic.demo":{"width":800,"height":400,"positions":{"knowledge.demo.first":{"x":160,"y":150},"knowledge.demo.second":{"x":480,"y":150}}}},
+  "maps":{"map.demo":{"width":800,"height":400,"positions":{"location.demo":{"x":160,"y":150}}}}
+}

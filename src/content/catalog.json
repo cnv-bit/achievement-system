@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 2,
+  "choiceGroups": [],
+  "modules": {
+    "adventure": {
+      "module": "adventure", "moduleName": "冒险与故事",
+      "chapters": [
+        {"chapterId":"chapter.1","chapterName":"示例第一章","chapterNumber":1},
+        {"chapterId":"chapter.2","chapterName":"示例第二章","chapterNumber":2},
+        {"chapterId":"chapter.3","chapterName":"示例第三章","chapterNumber":3},
+        {"chapterId":"chapter.4","chapterName":"示例第四章","chapterNumber":4},
+        {"chapterId":"chapter.5","chapterName":"示例第五章","chapterNumber":5}
+      ],
+      "storyTrees": [{"storyTreeId":"storyTree.demo","storyTreeName":"技术演示","chapterId":"chapter.1","rootNodeId":"story.demo.start"}],
+      "storyLines": [],
+      "nodes": [
+        {"nodeId":"story.demo.start","nodeName":"起点","storyTreeId":"storyTree.demo","condition":"技术样例：开始演示。"},
+        {"nodeId":"story.demo.next","nodeName":"下一站","storyTreeId":"storyTree.demo","condition":"技术样例：进入下一步。","prerequisiteNodeIds":["story.demo.start"]}
+      ]
+    },
+    "bonds": {
+      "module":"bonds","moduleName":"人物与羁绊",
+      "people":[{"personId":"person.demo","personName":"示例人物","keywords":["示例人物"]}],
+      "nodes":[
+        {"nodeId":"bond.demo.met","nodeName":"相识","personId":"person.demo","condition":"技术样例：认识示例人物。","allowsMemento":true},
+        {"nodeId":"bond.demo.followup","nodeName":"同行","personId":"person.demo","condition":"技术样例：继续同行。","prerequisiteNodeIds":["bond.demo.met"],"allowsMemento":true}
+      ]
+    },
+    "careers": {
+      "module":"careers","moduleName":"职业与成长",
+      "trees":[{"careerTreeId":"career.demo","careerTreeName":"示例职业"}],
+      "nodes":[
+        {"nodeId":"career.demo.first","nodeName":"基础阶段","careerTreeId":"career.demo","condition":"技术样例：完成基础任务。"},
+        {"nodeId":"career.demo.second","nodeName":"进阶阶段","careerTreeId":"career.demo","condition":"技术样例：完成进阶任务。","prerequisiteNodeIds":["career.demo.first"]}
+      ]
+    },
+    "abilities": {
+      "module":"abilities","moduleName":"战斗与技艺",
+      "owners":[{"skillOwnerId":"actor.demo","skillOwnerName":"示例持有者"}],
+      "skillTrees":[{"skillTreeId":"skillTree.demo","skillTreeName":"示例技能","skillOwnerId":"actor.demo"}],
+      "combatTrees":[{"combatTreeId":"combatTree.demo","combatTreeName":"示例挑战","keywords":["示例挑战"]}],
+      "nodes":[
+        {"nodeId":"ability.demo.first","nodeName":"基础技能","nodeKind":"skill","skillTreeId":"skillTree.demo","condition":"技术样例：完成技能任务。"},
+        {"nodeId":"ability.demo.second","nodeName":"进阶技能","nodeKind":"skill","skillTreeId":"skillTree.demo","condition":"技术样例：完成进阶技能。","prerequisiteNodeIds":["ability.demo.first"]},
+        {"nodeId":"combat.demo.first","nodeName":"基础挑战","nodeKind":"combat","combatTreeId":"combatTree.demo","condition":"技术样例：完成挑战。"}
+      ]
+    },
+    "knowledge": {
+      "module":"knowledge","moduleName":"知识体系",
+      "domains":[{"knowledgeDomainId":"knowledgeDomain.demo","knowledgeDomainName":"示例领域"}],
+      "topics":[{"knowledgeTopicId":"knowledgeTopic.demo","knowledgeTopicName":"示例主题","knowledgeDomainId":"knowledgeDomain.demo"}],
+      "nodes":[
+        {"nodeId":"knowledge.demo.first","nodeName":"基础知识","knowledgeTopicId":"knowledgeTopic.demo","condition":"技术样例：完成知识任务。"},
+        {"nodeId":"knowledge.demo.second","nodeName":"进阶知识","knowledgeTopicId":"knowledgeTopic.demo","condition":"技术样例：完成进阶知识。","prerequisiteNodeIds":["knowledge.demo.first"]}
+      ]
+    },
+    "travel": {
+      "module":"travel","moduleName":"旅行与探索",
+      "maps":[{"mapId":"map.demo","mapName":"示例地图"}],
+      "regions":[{"travelRegionId":"region.demo","travelRegionName":"示例地区","mapId":"map.demo"}],
+      "locations":[{"nodeId":"location.demo","nodeName":"示例地点","travelRegionId":"region.demo","condition":"技术样例：抵达地点。","inputKeywords":["示例地点"]}]
+    },
+    "journal":{"module":"journal","moduleName":"随手日记","maxEntryLength":280}
+  }
+}
