@@ -1,0 +1,8 @@
+{
+  "extends": "./tsconfig.json",
+  "include": [
+    "src/tavern-helper/index.ts",
+    "src/tavern-helper/globals.d.ts",
+    "src/assets.d.ts"
+  ]
+}

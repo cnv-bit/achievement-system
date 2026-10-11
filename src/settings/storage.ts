@@ -4,6 +4,7 @@ import { defaultSettings, type RuntimeSettings } from './model.ts';
 export interface StringStorage {
   getItem(key: string): string | null;
   setItem(key: string, value: string): void;
+  removeItem?(key: string): void;
 }
 
 export interface ChatSendingStorage {
@@ -119,13 +120,16 @@ function parseJson(source: string | null): unknown {
 export class SettingsRepository {
   private readonly settingsStorage: StringStorage;
   private readonly chatSendingStorage: ChatSendingStorage | undefined;
+  private readonly coordinateWrite: ((write: () => Promise<void>) => Promise<void>) | undefined;
 
   constructor(
     settingsStorage: StringStorage,
     chatSendingStorage?: ChatSendingStorage,
+    coordinateWrite?: (write: () => Promise<void>) => Promise<void>,
   ) {
     this.settingsStorage = settingsStorage;
     this.chatSendingStorage = chatSendingStorage;
+    this.coordinateWrite = coordinateWrite;
   }
 
   load(): RuntimeSettings {
@@ -140,17 +144,32 @@ export class SettingsRepository {
   }
 
   async save(settings: RuntimeSettings): Promise<void> {
+    const intent = structuredClone(settings);
+    const write = () => this.write(intent);
+    if (this.coordinateWrite) await this.coordinateWrite(write);
+    else await write();
+  }
+
+  private async write(settings: RuntimeSettings): Promise<void> {
     const accountSettings = structuredClone(settings);
     if (this.chatSendingStorage) {
       accountSettings.sending.mode = 'manual';
       accountSettings.sending.enabledModuleIds = [];
       accountSettings.sending.selectedGroupIds = [];
     }
+    const previous = this.settingsStorage.getItem(SETTINGS_KEY);
     this.settingsStorage.setItem(SETTINGS_KEY, JSON.stringify(accountSettings));
-    await this.chatSendingStorage?.write({
-      mode: settings.sending.mode,
-      enabledModuleIds: [...settings.sending.enabledModuleIds],
-      selectedGroupIds: [...settings.sending.selectedGroupIds],
-    });
+    try {
+      await this.chatSendingStorage?.write({
+        mode: settings.sending.mode,
+        enabledModuleIds: [...settings.sending.enabledModuleIds],
+        selectedGroupIds: [...settings.sending.selectedGroupIds],
+      });
+    } catch (error) {
+      if (previous !== null) this.settingsStorage.setItem(SETTINGS_KEY, previous);
+      else if (this.settingsStorage.removeItem) this.settingsStorage.removeItem(SETTINGS_KEY);
+      else this.settingsStorage.setItem(SETTINGS_KEY, 'null');
+      throw error;
+    }
   }
 }

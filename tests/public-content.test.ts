@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { applyPlayerCommand, buildPlayerView, emptyAchievementSave, exampleCatalog,
+import { applyPlayerCommand, buildPlayerView, emptyAchievementSave,
   validateContentCatalog, validateContentLayouts } from '../src/domain/index.ts';
+import { exampleCatalog } from '../src/content/examples.ts';
 import { bundledLayouts } from '../src/content/index.ts';
 import { buildJournalScene } from '../src/frontend/view-scene.ts';
 import { buildBondPersonViews, buildCareerTreeViews } from '../src/frontend/journal-layout.ts';

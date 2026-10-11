@@ -8,7 +8,7 @@ import type { AchievementSave } from '../src/domain/index.ts';
 
 class MemoryMetadataPort implements AchievementMetadataPort {
   state: AchievementSave = {
-    schemaVersion: 6,
+    schemaVersion: 7,
     chapterProgress: {},
     retractedNodeProgress: {},
     revision: 2,
@@ -73,17 +73,12 @@ const sourceMessages: RuntimeChatMessage[] = [
 test('recording a processed request preserves existing node progress', async () => {
   const port = new MemoryMetadataPort();
   const repository = new AchievementMetadataRepository(port);
-  const current = repository.load();
-
-  await repository.save({
+  await repository.commit(current => ({ save: {
     ...current,
     revision: current.revision + 1,
-    processedThrough: {
-      ...current.processedThrough,
-      adventure: { messageId: 'message-5', turnIndex: 2 },
-    },
+    processedThrough: { ...current.processedThrough, adventure: { messageId: 'message-5', turnIndex: 2 } },
     appliedRequestIds: [...current.appliedRequestIds, 'request-1'],
-  });
+  }, result: undefined }));
 
   assert.equal(port.state.nodeProgress['story.existing']?.status, 'unlocked');
   assert.deepEqual(port.state.processedThrough.adventure, { messageId: 'message-5', turnIndex: 2 });
@@ -96,7 +91,7 @@ test('loading a version 1 save migrates it in memory without overwriting metadat
 
   const loaded = repository.load();
 
-  assert.equal(loaded.schemaVersion, 6);
+  assert.equal(loaded.schemaVersion, 7);
   assert.deepEqual(loaded.nodeProgress['story.existing']?.sourceRefs, [{
     messageId: 'message-3',
     contentVersion: 'legacy:unknown',

@@ -13,6 +13,8 @@ export class RuntimeScheduler {
   private stops: Array<() => void> = [];
   private isRunning = false;
   private queuedMessageId: number | undefined;
+  private queuedChatId: string | undefined;
+  private stopped = false;
 
   constructor(
     runtime: AchievementRuntime,
@@ -26,33 +28,41 @@ export class RuntimeScheduler {
 
   start(): void {
     if (this.stops.length > 0) return;
+    this.stopped = false;
     this.stops.push(this.chat.onAssistantMessage(messageId => void this.onAssistantMessage(messageId)));
-    this.stops.push(this.chat.onChatChanged(() => this.report({ phase: 'idle', message: '已切换聊天，成就存档随当前聊天切换。' })));
+    this.stops.push(this.chat.onChatChanged(() => {
+      this.queuedMessageId = this.queuedChatId = undefined;
+      this.report({ phase: 'idle', message: '已切换聊天，成就存档随当前聊天切换。' });
+    }));
   }
 
   stop(): void {
+    this.stopped = true;
+    this.queuedMessageId = this.queuedChatId = undefined;
     this.stops.forEach(stop => stop());
     this.stops = [];
   }
 
   private async onAssistantMessage(messageId: number): Promise<void> {
+    if (this.stopped) return;
     if (this.isRunning) {
       this.queuedMessageId = Math.max(this.queuedMessageId ?? messageId, messageId);
+      this.queuedChatId = this.chat.currentChatId();
       return;
     }
     this.isRunning = true;
     try {
       let nextMessageId: number | undefined = messageId;
       while (nextMessageId !== undefined) {
-        this.queuedMessageId = undefined;
+        this.queuedMessageId = this.queuedChatId = undefined;
         try {
           const completed = await this.runtime.runAutomatic(nextMessageId);
-          if (completed) this.report(completed.skipped ? { phase: 'idle', message: completed.response.judgementSummary } : { phase: 'completed', message: `自动判定完成，存档版本 ${completed.save.revision}。` });
+          if (completed && !this.stopped) this.report(completed.skipped ? { phase: 'idle', message: completed.response.judgementSummary } : { phase: 'completed', message: `自动判定完成，存档版本 ${completed.save.revision}。` });
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
-          this.report({ phase: 'error', message });
+          if (!this.stopped) this.report({ phase: 'error', message });
         }
-        nextMessageId = this.queuedMessageId;
+        nextMessageId = !this.stopped && this.queuedChatId === this.chat.currentChatId() ? this.queuedMessageId : undefined;
       }
     } finally {
       this.isRunning = false;

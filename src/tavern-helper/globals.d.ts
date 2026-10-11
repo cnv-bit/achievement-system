@@ -6,6 +6,8 @@ interface TavernChatMessage {
 
 declare function getChatMessages(range: string | number, options?: { include_swipes?: false }): TavernChatMessage[];
 declare function getWorldbookNames(): string[];
+/** Existing Tavern Helper API, see references/interfaces/function/raw_character.d.ts. */
+declare function getCharData(name: 'current'): { data: { extensions?: Record<string, unknown> } } | null;
 declare const tavern_events: {
   MESSAGE_RECEIVED: 'message_received';
   CHAT_CHANGED: 'chat_id_changed';
@@ -14,6 +16,7 @@ declare function eventOn(event: string, listener: (...args: never[]) => void): {
 declare function getButtonEvent(buttonName: string): string;
 declare function replaceScriptButtons(buttons: Array<{ name: string; visible: boolean }>): void;
 declare const __GOBLIN_JOURNAL_CSS__: string;
+declare const __GOBLIN_CONTENT_IMAGES__: Readonly<Record<string, string>>;
 
 declare const SillyTavern: {
   loadWorldInfo(name: string): Promise<{ entries: Record<string, {
@@ -25,7 +28,7 @@ declare const SillyTavern: {
   getRequestHeaders(): Record<string, string>;
   accountStorage: Storage;
   chatMetadata: Record<string, unknown>;
-  getCurrentChatId(): string;
+  getCurrentChatId(): string | undefined;
   updateChatMetadata(values: Record<string, unknown>, reset: boolean): void;
   saveMetadata(): Promise<void>;
 };
@@ -39,6 +42,8 @@ interface Window {
   GoblinAchievementsPlugin?: unknown;
   GOBLIN_ACHIEVEMENTS_CATALOG?: unknown;
   GOBLIN_ACHIEVEMENTS_LAYOUTS?: unknown;
+  GOBLIN_ACHIEVEMENTS_PACK?: import('../domain/types.ts').ContentPackBinding;
+  GOBLIN_ACHIEVEMENTS_LEGACY_PACK?: import('../domain/types.ts').ContentPackBinding;
   /** Host-verified existing files only: full filename -> browser-loadable URL. */
   GOBLIN_ACHIEVEMENTS_IMAGES?: Record<string, string>;
   GOBLIN_ACHIEVEMENTS_MODEL_CONTEXT?: import('../runtime/model-context.ts').ModelContextReader;

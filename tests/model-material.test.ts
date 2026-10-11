@@ -32,7 +32,7 @@ const catalog: ContentCatalog = {
   },
 };
 const save: AchievementSave = {
-  schemaVersion: 6, revision: 0, nodeTasks: {}, retractedNodeProgress: {}, annotationCards: {}, journalEntries: [], manualCorrections: {}, chapterProgress: {}, processedThrough: {}, appliedRequestIds: [],
+  schemaVersion: 7, revision: 0, nodeTasks: {}, retractedNodeProgress: {}, annotationCards: {}, journalEntries: [], manualCorrections: {}, chapterProgress: {}, processedThrough: {}, appliedRequestIds: [],
   nodeProgress: Object.fromEntries(['bond.a1', 'bond.b1', 'node.hidden'].map(id => [id, { status: 'unlocked' as const, unlockedAt: '2026-10-01', sourceRefs: [] }])),
 };
 

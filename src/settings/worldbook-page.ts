@@ -1,4 +1,4 @@
-import { ApiSettingsController } from './controller.ts';
+import type { ApiSettingsPort } from './ports.ts';
 import { errorMessage, requiredElement, setStatus } from './dom.ts';
 import type { WorldbookEntry } from '../runtime/ports.ts';
 
@@ -17,7 +17,7 @@ const TEMPLATE = `<form data-worldbooks-form class="journal-admin-form">
   <p data-status role="status" aria-live="polite"></p>
 </form>`;
 
-export function mountWorldbookPage(container: HTMLElement, controller: ApiSettingsController): () => void {
+export function mountWorldbookPage(container: HTMLElement, controller: ApiSettingsPort): () => void {
   container.innerHTML = TEMPLATE;
   const root = requiredElement<HTMLElement>(container, '[data-worldbooks-form]');
   const selector = requiredElement<HTMLSelectElement>(root, '[name="worldbook"]');

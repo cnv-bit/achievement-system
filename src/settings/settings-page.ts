@@ -1,5 +1,5 @@
 import type { RuntimeSettings } from './model.ts';
-import { ApiSettingsController, type SettingsSnapshot } from './controller.ts';
+import type { ApiSettingsPort, SettingsSnapshot } from './ports.ts';
 import { errorMessage, option, requiredElement, setStatus } from './dom.ts';
 import { mountWorldbookPage } from './worldbook-page.ts';
 
@@ -100,7 +100,7 @@ async function reportAction(
   }
 }
 
-export function mountSettingsPage(container: HTMLElement, controller: ApiSettingsController): () => void {
+export function mountSettingsPage(container: HTMLElement, controller: ApiSettingsPort): () => void {
   container.innerHTML = SETTINGS_TEMPLATE;
   const worldbookContainer = container.ownerDocument.createElement('section');
   container.append(worldbookContainer);

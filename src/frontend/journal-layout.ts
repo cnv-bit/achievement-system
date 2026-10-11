@@ -38,7 +38,7 @@ export function buildAbilityOwnerViews(nodes: PlayerNodeView[], scene: JournalSc
 export function buildKnowledgeTreeViews(nodes: PlayerNodeView[], scene: JournalScene): JournalTreeView[] {
   const trees = (scene.groups ?? []).flatMap(group => {
     const groupNodes = visibleNodes(nodes, group.nodeIds);
-    return groupNodes.length ? [{ id: group.id, title: group.title, nodes: groupNodes }] : [];
+    return groupNodes.length ? [{ id: group.id, title: group.title, nodes: groupNodes, ...(group.image ? { image: group.image } : {}) }] : [];
   });
   return trees;
 }

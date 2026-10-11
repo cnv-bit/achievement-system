@@ -1,126 +1,111 @@
-# 用户与数据库侧：数据与本地交互
+# 数据与玩家交互契约
 
-七模块需求与阶段顺序见 [专属计划](./PLAN.md)，字段规范见 [命名与显示契约](./naming-and-display.md)，模型响应协议见 [child-api.md](./child-api.md)。
+目录版本 3 的作者编辑、带类型依赖与通用五态见[作者契约](authoring.md)。版本 2 继续按原行为读取；下文仅限职业、技能、知识的任务描述适用于旧目录。新目录各节点复用同一五态流程，作者后台只管理静态定义。
 
-2026-10-04：目录版本 2、存档版本 6 的三类成长任务五态生命周期已写入源码；模型判定后进入可领取，玩家点击节点才正式完成。测试由用户执行。章节完成计算和地点计数仍待后续阶段实现。
+玩家查询与命令的应用接口为 `src/runtime/player-port.ts` 的 `PlayerUseCases`；命令及返回视图沿用现有领域类型。前端 `JournalPort` 组合此接口与布局／页面挂载，DOM 不进入业务契约；版本操作继续使用 `PackVersionsPort`。
 
-2026-10-03 用户新决定：模型返回仅含 `schemaVersion/judgementSummary/updates`，由程序从发送快照补上 `requestId/chatId/baseRevision` 后交接。取消 `sourceMessageIds`，新结果的 `sourceRefs` 留空；旧存档来源及迁移仍兼容，不清理历史。请求防重复、在途版本保护和手动依赖撤回保留；不再按被否定的正文证据阻止新提案，原定逐结果来源自动撤回不适用于新记录。详见 [最新交接约定](./child-api.md)。
+本文说明当前已实现的数据、玩家操作和视图接口。[本地侧计划](./PLAN.md)保留尚未落地的需求与待办；其中历史记录和字段草案不作为当前存档格式。
 
-本侧只管理内容定义、达成状态、玩家查询、编辑和聊天存档，不调用模型，不另建运行框架。提示词配置属于模型侧，统一使用 `taskPrompt`、`reasoningPrompt` 和 `modulePrompts`；本侧只接收已校验的更新提案与状态上下文。状态应用、玩家操作共用原来的聊天元数据保存链路。
+## 职责与参考入口
 
-## 静态目录与玩家归属速查
+Domain 接收静态目录、当前存档、玩家命令及模型更新，统一判断前置、互斥和任务流程，并产出玩家视图。宿主负责保存，前端负责呈现。
 
-### 2026-10-03：任务、关键词与章节字段
+- [命名与显示契约](./naming-and-display.md)：目录层级、节点归属、名称、坐标和图片字段。
+- [模型侧契约](./child-api.md)：材料筛选、请求权限、响应协议和更新数量。
+- [内容包契约](./content-packs.md)：公有资源、版本绑定、发布、迁移和加载。
+- [架构重构指南](../refactoring-guide.md)：Runtime、Domain、存储、提交队列和通知边界。
+- [前端美术指南](../guides/frontend-art.md)：页面收纳、详情窗口和图片呈现。
 
-- 职业、技能、知识采用五状态任务；只有 `active` 节点进入模型材料，不读树关键词。人物与羁绊、战斗成就继续按归属 `keywords` 匹配。剧情发送显式 `currentChapterId` 对应大阶段的全部剧情树，不做关键词筛选。完整边界见 [模型侧约定](./child-api.md)。
-- 存档版本 6 保留可选 `currentChapterId`；`nodeTasks` 保存接取、待领取和一次性提醒事实，五状态由统一函数计算。版本 5 加载时只提升版本号，不改已有进度。
-- 剧情节点可选 `chapterId`，缺失沿用所属树章节。其他阶段已完成前置用布尔完成标记传递，不暴露节点 ID，原目录完整前置仍由落库入口检查。旅行与日记不采用本次任务筛选。
-- 目录仍兼容已有可选关键词字段，但当前发送流程只用人物和战斗树关键词。技能拥有者可选 `revealNodeId`；未达成该节点时，其入口与技能任务不进入玩家视图。
+代码类型见 [types.ts](../../src/domain/types.ts)；玩家命令和查询见 [player-state.ts](../../src/domain/player-state.ts)。本文不重复完整目录字段表、关键词匹配算法或部署流程。
 
-### 现有目录（版本 2）
+## 存档版本 7（兼容 1—6）
 
-目录没有手填的 `nodeIds` 名单；按节点明确的父级 ID 查询成员。日记不是树节点。
-
-| 模块 | 目录入口与名称 | 节点父级 | 玩家节点另外携带 |
-| --- | --- | --- | --- |
-| 冒险与故事 | `adventure.chapters: chapterId/chapterName/chapterNumber` → `storyTrees: storyTreeId/storyTreeName/chapterId/rootNodeId` | `storyTreeId` | `chapterId`、`storyTreeId` |
-| 人物与羁绊 | `bonds.people: personId/personName` | `personId` | `personId` |
-| 职业与成长 | `careers.trees: careerTreeId/careerTreeName` | `careerTreeId` | `careerTreeId` |
-| 技能 | `abilities.owners: skillOwnerId/skillOwnerName` → `skillTrees: skillTreeId/skillTreeName/skillOwnerId` | `nodeKind: skill`、`skillTreeId` | `nodeKind`、`skillTreeId`、`skillOwnerId` |
-| 战斗成就 | `abilities.combatTrees: combatTreeId/combatTreeName` | `nodeKind: combat`、`combatTreeId` | `nodeKind`、`combatTreeId` |
-| 知识体系 | `knowledge.domains: knowledgeDomainId/knowledgeDomainName` → `topics: knowledgeTopicId/knowledgeTopicName/knowledgeDomainId` | `knowledgeTopicId` | `knowledgeTopicId`、`knowledgeDomainId` |
-| 旅行与探索 | `travel.maps: mapId/mapName` → `regions: travelRegionId/travelRegionName/mapId` | `travelRegionId` | `travelRegionId`、`mapId` |
-| 随手日记 | `journalEntries` | 无 | `journalId/origin/text/createdAt` |
-
-每个节点统一使用 `nodeId/nodeName/condition`，可选 `prerequisiteNodeIds/choiceGroupId/imageName/imageAlt`。人物节点另有 `allowsMemento`，地点另有 `inputKeywords`。栏目定义含 `moduleName`，本轮前端栏目仍使用固定展示文案。
-
-`choiceGroups` 用 `choiceGroupId/choiceGroupName/module`，并声明 `storyTreeId` 或 `personId`。仅分歧处的选择节点加入同组，普通后续用前置链承接。`adventure.storyLines` 用 `storyLineId/storyLineName/storyTreeId/endingNodeIds`；结局计数暂未执行。
-
-## 名称与附言卡
-
-一个节点只有一个原名和一个玩家改名：
-
-```text
-catalog node.nodeName
-    ↓ 被 nodeProgress[nodeId].nodeNameOverride 覆盖
-PlayerNodeView.nodeName → 节点文字、详情卡标题、编辑框名字
-```
-
-卡片不再保存标题。卡片统一为 `cardId/nodeId/style/text/textOverride/sourceRefs`，可选 `imageName/imageAlt`。图片与附文共用详情窗口，卡片正文采用 `textOverride ?? text`；自动文案仍独立存于 `generatedCopy`，日记原文仍为 `generatedText`。
-
-## 存档版本 6
-
-数据仍放在 `chatMetadata.goblin_achievements`，合并更新专用字段并调用 `saveMetadata()`，不改其他元数据。
+成就数据保存在 `chatMetadata.goblin_achievements`，合并更新专用字段并调用 `saveMetadata()`。存档只保存进度与私人记录；完整树、布局和公有图片保存在内容包。
 
 | 字段 | 当前含义 |
 | --- | --- |
-| `schemaVersion/revision` | 存档版本固定 6；每次成功写入递增修订号 |
-| `currentChapterId` | 可选，显式当前阶段；不按最高开放章推导，不自动解锁或开放章节 |
-| `nodeProgress` | 当前达成记录：状态、时间、`cardId`、`nodeNameOverride`、生成文案；新记录的 `sourceRefs` 为空 |
-| `nodeTasks` | 保存 `acceptedAt/claimableAt`、两类提醒标记和待领取文案；`blocked/available/active/claimable/completed` 统一推导 |
-| `retractedNodeProgress` | 撤回后的暂存记录，保留玩家改名；不提供达成权限，不进入玩家或模型查询 |
-| `annotationCards` | 达成卡及撤回后保留的卡；仅通过可见达成节点输出 |
-| `journalEntries` | 生成／玩家日记，统一 `journalId`，可保存玩家改写 |
-| `manualCorrections` | 兼容旧版否定来源记录；新结果不提供正文依据，不再用它拦截模型提案 |
-| `chapterProgress` | `opened/completed`；目前只负责保存和查询开放状态，完成规则尚未计算 |
-| `processedThrough/appliedRequestIds` | 各模块处理位置与请求防重复 |
-| `migrationBackup` | 旧存档完整 JSON，仅迁移后保存；不进入展示或模型请求 |
+| `schemaVersion/revision` | 格式版本 7；每次成功写入递增修订号 |
+| `packId/packVersion/packHash` | 内容包身份；旧内联存档可以暂缺，正式绑定后三者完整保存 |
+| `currentChapterId` | 显式当前剧情阶段，与章节开放状态分开；不按最高开放章推导 |
+| `nodeProgress` | 按节点 ID 保存完成时间、卡片引用、玩家改名和生成文案 |
+| `nodeTasks` | 接取／待领取时间、两类提醒标记和待领取文案；五态由这些事实和前置统一推导 |
+| `retractedNodeProgress` | 上锁后暂存的进度和玩家改名；不授予完成资格 |
+| `annotationCards` | 附言卡与撤回后保留的卡片；只随可见已达成节点输出 |
+| `journalEntries` | 生成／玩家日记，含独立 ID、可选标题、时间和正文 |
+| `manualCorrections` | 旧纠错记录的兼容字段；不作为证据黑名单 |
+| `chapterProgress` | 章节的 `opened/completed`；当前保存和查询状态，尚未自动计算完成门槛 |
+| `processedThrough` | 各模块自动处理位置；手动历史判定不改变该游标 |
+| `appliedRequestIds/requestOutcomes` | 请求去重、已接受项与拒绝原因；拒绝项不在重复回调中补执行 |
+| `migrationBackup` | 旧成就存档的完整备份，不进入展示或模型材料 |
+| `orphanedProgress/orphanedChapters` | 内容版本迁移后的遗留记录，不参与当前节点前置或章节计数 |
+| `packRollback` | 一步内容版本恢复所需的记录快照；具体规则见内容包契约 |
 
-新聊天从空存档开始。成就存档不保存 API Key、提示词、图片字节、布局副本或聊天正文；迁移备份保存的仅是原有成就专用字段。
+新聊天从空进度开始，复制聊天继承包绑定和进度。存档不保存 API Key、提示词、图片字节、布局副本或聊天正文。
 
-旧版本 1—5 只在内存中迁移，经校验且下一次合法操作后才写回。节点 ID 不改；版本 4 补空 `nodeTasks`，版本 5 只提升版本号。旧玩家改名收敛为 `nodeNameOverride`，附文收敛为 `textOverride`。不同旧改名冲突、卡片归属损坏或新目录前置缺失时拒绝迁移并保留原数据；不自动补亮前置。
+新达成、附言卡和日记的 `sourceRefs` 留空；旧来源字段兼容保留。当前不根据删楼或正文重生成自动撤回新记录。旧正文可以补审，是否接受仍由当前前置、互斥、任务状态和请求权限决定。
+
+旧版本先在内存中迁移，原始成就数据保留于 `migrationBackup`。内联模式在下一次合法保存时写回；正式内容包模式在内容校验、绑定和保存成功后写回。坏归属、冲突改名或缺失前置拒绝迁移，保留原记录。存档格式迁移与内容包版本升级是两个流程，后者见[内容包契约](./content-packs.md#阶段-c显式版本迁移)。
+
+`choiceSelections/sharedFacts/locationObservations/completedEndingCount` 等计划字段尚未进入当前 `AchievementSave`，不能按计划草案直接写入存档。
+
+## 名称与附言卡
+
+节点显示名为 `nodeNameOverride ?? nodeName`，节点文字、详情标题和编辑框共用这一结果。卡片只保存 `cardId/nodeId/style/text/textOverride/sourceRefs` 与图片引用，不另存节点标题。
+
+正文显示采用 `textOverride ?? text`。玩家改写与生成文案分开保存；同一字段以后提交的合法修改为准，模型更新该附文字段时可替换旧玩家改写，未涉及字段保留。
+
+撤回后卡片与玩家改名暂存；重新达成复用原卡片 ID 和图片引用。combat 的介绍来自目录 `description`，不创建生成附言卡，也不允许玩家改写怪物介绍。
 
 ## 玩家操作
 
-`PlayerCommand` 不提供手动解锁：
+前端通过 `dispatchPlayerCommand(command)` 提交操作；`PlayerCommand` 不提供手动解锁。
 
-- `editNodeCard { nodeId, patch: { nodeName?, text? } }`：修改已达成节点名称和附文。
-- `lockNode { nodeId }`：撤回目标与后续前置依赖，暂存改名并保留卡片；旧记录若有来源仍保留其否定记录，新记录不产生正文来源。
-- `acceptNodeTask { nodeId, acceptedAt }`：仅可接取当前 `available` 的职业、技能或知识任务。
-- `claimNodeTask { nodeId, claimedAt }`：直接点击当前 `claimable` 节点领取，写入完成记录与火漆卡片。
-- `markAvailableTasksNotified { nodeIds }`：在提醒成功后记录本轮已提醒；纠错撤回依赖时清除，重新可接取会再次提醒。
-- `markClaimableTasksNotified { nodeIds }`：记录本轮待领取提醒；不改变红点数量或领取状态。
-- `addPlayerJournal { journalId, text, createdAt }`、`editJournalEntry { journalId, text }`、`deleteJournalEntry { journalId }`。
+| 命令 | 参数与行为 |
+| --- | --- |
+| `editNodeCard` | `nodeId, patch: { nodeName?, text? }`；编辑已达成节点名称与附文，combat 不允许 |
+| `lockNode` | `nodeId`；撤回目标及全部后续前置依赖，保留卡片与玩家改写 |
+| `acceptNodeTask` | `nodeId, acceptedAt`；接取当前 available 的职业、技能或知识任务 |
+| `claimNodeTask` | `nodeId, claimedAt`；领取当前 claimable 任务并写入完成记录 |
+| `markAvailableTasksNotified` | `nodeIds`；记录可接取提醒已发出 |
+| `markClaimableTasksNotified` | `nodeIds`；记录可领取提醒已发出 |
+| `addPlayerJournal` | `journalId, text, createdAt, title?`；创建玩家日记 |
+| `editJournalEntry` | `journalId, text, title?`；编辑日记 |
+| `deleteJournalEntry` | `journalId`；删除指定日记 |
 
-重新达成时复用暂存卡片 ID、玩家改名、附文改写和已解析的图片文件名。不再判断是否为相同正文证据；不同请求仍可能重新解锁玩家锁回的节点。保存失败时不报告成功。
+日记标题最多 200 字；编辑时省略标题保留原值，空白标题清除原值，未命名显示“无题日记”。生成正文为 `generatedText`，玩家正文或改写为 `playerText`。
+
+上锁完成任务后，前置满足则回到 available，须重新接取；受影响的后续任务清除接取与提醒事实。重新满足条件时可再次提醒。上锁怪物根节点同时撤回本树后续，使入口恢复未遇见。
 
 ## 玩家视图与场景
 
-`buildPlayerView(catalog, save)` 另输出 `availableTaskCount/claimableTaskCount/actionableTaskCount` 及两类新提醒 ID；入口红点使用 `actionableTaskCount`。
+`buildPlayerView(catalog, save)` 输出可见节点、分组、连线、大章、日记及任务计数。前端入口为 `getPlayerView()`、`getPlayerScene(module)` 和 `dispatchPlayerCommand(command)`。
 
-- 开放大章组成连续前缀；第一章默认开放。每个已开放大章的所有地区根可见，但 `unlocked: false` 的根不生成卡、图片、连线或完成计数。
-- 三类成长任务输出 `nodeState: blocked | available | active | claimable | completed`；其他普通节点仍只输出已达成内容。未遇人物或被 `revealNodeId` 隐藏的技能拥有者入口不输出。
-- 任务同树两端可见即可输出浅线；其他连线仍要求两端达成。跨模块任务前置只参与状态计算，不输出跨页线。
-- `groups` 是可见成员的归属与正式名称，不暴露空技能树、未来章节或关闭分支。
+| 内容 | 当前可见性与状态 |
+| --- | --- |
+| 剧情 | 第一章默认开放；开放大章组成连续前缀，全部地区树根可见，普通节点达成后才输出 |
+| 人物 | 未遇见人物隐藏入口；已遇见人物输出自己的已达成关系节点，被关闭的互斥分支隐藏 |
+| 职业、skill 技能、知识 | 输出 blocked／available／active／claimable／completed；技能拥有者受 `revealNodeId` 限制 |
+| combat 怪物 | 所有入口可输出；根未达成时名称为“？？？”，隐藏内部树；根达成后输出全部预设节点，未完成节点不开放详情 |
+| 旅行、日记 | 地点只输出已达成内容；日记按独立条目展示 |
 
-`buildJournalScene(view, layouts, module, resolveImage?)` 把查询转换为前端 `JournalScene`。只累计开放章节宽度；黑雾在已开放画布边缘内装饰，不增加未来滚动空间。其他树各用自己的坐标；战斗树不冒充技能角色卡，知识按领域／主题展示。缺坐标时展示列表，不造临时位置。
+任务状态统一推导，模型达成进入 claimable，玩家领取后才成为 completed 并满足后续前置。红点为 `actionableTaskCount = availableTaskCount + claimableTaskCount`；两类新提醒 ID 分别由视图输出，已提醒标记不影响红点数量。
 
-插件句柄提供 `getPlayerView()`、`getPlayerScene(module)`、`dispatchPlayerCommand(command)`。前端只消费这些入口，不读取原始存档或复制解锁规则。悬停查看、点击固定、右键编辑仍沿用已有前端交互。
+combat 的入口状态由根节点进度推导，不另存 seen；树内保持未完成／已完成两态。每种怪物独立，所有节点沿本树 DAG 连接无前置的 `rootNodeId`。
 
-## 内容与图片加载入口
+连线两端必须可见：任务和已遇见怪物的树内可输出浅线，其他节点连线两端须达成。跨模块任务前置仅参与规则计算，不输出跨页线。未达成剧情根不生成卡片、图片或连线。
 
-已建立 `src/content/catalog.json`、`layouts.json`、`images/`；少量技术样例不代表正式剧情。入口 `src/content/index.ts` 加载并校验 JSON，现阶段随既有脚本打包；默认技术骨架及独立前端预览共用这些数据。
+`buildJournalScene(view, layouts, module, resolveImage?)` 将投影转换为 `JournalScene`。场景只累计开放大章宽度；黑雾在已开放画布内装饰，不增加未来滚动范围。坐标与图片来源见[命名与显示契约](./naming-and-display.md)；图片只使用宿主解析出的有效 URL，缺图使用占位，缺坐标展示列表。
 
-正式宿主可在启动前提供：
+## 校验与提交入口
 
-```text
-GOBLIN_ACHIEVEMENTS_CATALOG = 已整理的目录版本 2
-GOBLIN_ACHIEVEMENTS_LAYOUTS = 布局版本 1
-GOBLIN_ACHIEVEMENTS_IMAGES = { "示例地区地图.webp": "宿主确认存在的可加载地址" }
-start(catalog, readModelContext?, layouts?)
-```
+- `validateContentCatalog`：目录结构、唯一 ID、父级引用、树根、DAG 和互斥组。
+- `validateContentLayouts`：布局归属、坐标、尺寸和图片引用。
+- `loadAchievementSave/validateAchievementSave`：存档迁移与当前格式校验，错误数据不以空存档覆盖。
+- `validateChildApiResponse`：响应字段和本次请求权限；协议由模型侧契约维护。
+- `applyPlayerCommand` 与 `applyChildApiResponseWithOutcome`：玩家操作和模型结果的本地规则与状态落位。
 
-`imageName` 是文件名（含扩展名），不是 URL。只有宿主确认文件存在且能解析地址，适配器才输出图片；缺图留白。所属者入口图必须来自所属者字段，不借用技能节点图片。
+模型普通节点更新写入 `nodeProgress`，任务更新写入 `nodeTasks` 的待领取事实，日记更新追加 `journalEntries`。只有 combat 可使用本批明确返回并接受的同树前置；其他节点按批次开始前的最新状态检查，均不自动补亮未返回的前置。
 
-运行端目录仍约定为登录账号下的 `goblin-achievements/catalog.json、layouts.json、images/`。账号文件读取路由、图片路由、部署同步和生图尚未接入；仅把文件放进开发目录不会让已安装旧脚本自动更新。
+所有写入经统一提交队列读取最新存档、应用规则并保存；成功后才发布视图并通知。队列、失败恢复、聊天身份与请求去重见[架构重构指南](../refactoring-guide.md#三统一提交手动修改冲突与请求去重)。
 
-## 校验与职责边界
-
-- `validateContentCatalog`：检查完整五章、七模块、正式名称、全局唯一 ID、父级引用、树根、前置无环和具名互斥。
-- `validateContentLayouts`：检查树／地图归属、有限坐标、尺寸和图片文件名；允许尚未配置的布局。
-- `loadAchievementSave`／`validateAchievementSave`：迁移旧存档／校验当前存档，不用空存档覆盖错误数据。
-- `validateChildApiResponse`：模型交接协议仍为版本 1，`CandidateNode.prerequisiteIds` 暂作协议字段，由请求适配器从目录 `prerequisiteNodeIds` 转换，不能反用于内容文件。
-
-返回格式仍为 `{ok:true,value}` 或 `{ok:false,issues}`。纯数据层不弹通知；UI 在保存成功或失败后复用项目通知入口。
-
-原计划的来源自动撤回须结合 2026-10-03 取消逐结果来源的新决定重新评估，不在本轮实现；不得把 `message-7` 等楼层号当成跨删楼稳定 ID。
+纯数据层返回结果或校验问题；校验格式为 `{ok:true,value}` 或 `{ok:false,issues}`，通知由 UI／调度入口负责。

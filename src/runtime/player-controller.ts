@@ -24,8 +24,10 @@ export class AchievementPlayerController {
   }
 
   async dispatch(command: PlayerCommand): Promise<AchievementPlayerView> {
-    const next = applyPlayerCommand(this.catalog, this.metadata.load(), command);
-    await this.metadata.save(next);
-    return buildPlayerView(this.catalog, next);
+    const intent = structuredClone(command);
+    return this.metadata.commit(save => {
+      const next = applyPlayerCommand(this.catalog, save, intent);
+      return { save: next, result: buildPlayerView(this.catalog, next) };
+    });
   }
 }

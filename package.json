@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "preview": "node src/frontend/serve.mjs",
-    "build": "tsc --noEmit && node scripts/build.mjs",
+    "build": "tsc --noEmit -p tsconfig.build.json && node scripts/build.mjs",
     "test": "node --experimental-strip-types --test tests/*.test.ts tests/*.test.mjs",
     "typecheck": "tsc --noEmit"
   },

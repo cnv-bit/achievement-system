@@ -3,7 +3,7 @@ import type { RuntimePreview } from '../runtime/achievement-runtime.ts';
 import type { RuntimeSettings } from '../settings/model.ts';
 import type { ModelGroupOption } from '../runtime/model-context.ts';
 import { errorMessage, requiredElement, setStatus } from '../settings/dom.ts';
-import { PromptingController } from './controller.ts';
+import type { PromptingPort } from './ports.ts';
 
 const MODULE_LABELS: Record<ContentModule, string> = {
   adventure: '冒险与故事', bonds: '人物与羁绊', careers: '职业与成长', abilities: '战斗与技艺',
@@ -31,9 +31,9 @@ const PROMPTING_TEMPLATE = `
     <fieldset>
       <legend>旅行与探索：发送哪些地区</legend>
       <div data-group-switches></div>
-      <p class="journal-form-note">剧情发送当前大阶段整树；人物与羁绊、战斗成就继续按所选用户输入和清洗正文匹配关键词；职业、技能、知识只发送玩家已接取的任务。旅行保留地区选择，日记无需选树。所有内容仍受模块开关、数据准入、正文正则和世界书装配约束。</p>
+      <p class="journal-form-note">剧情按所选用户输入和清洗正文匹配地区树，仅发送命中树的当前大阶段节点；人物与羁绊、战斗成就沿用关键词匹配；职业、技能、知识只发送玩家已接取的任务。旅行保留地区选择，日记无需选树。所有内容仍受模块开关、数据准入、正文正则和世界书装配约束。</p>
     </fieldset>
-    <p class="journal-form-note">每次请求中，每个勾选模块最多接受一条更新；批量正文不增加名额。</p>
+    <p class="journal-form-note">每次请求每模块最多一条；怪物图鉴可返回多个不同成就，不占用技能名额。怪物介绍由作者预设。</p>
   </details>
   <details open><summary>选择要编辑的提示词</summary>
     <label>提示词块
@@ -198,7 +198,7 @@ function previewText(preview: RuntimePreview): string {
   ].join('\n')).join('\n\n');
 }
 
-export function mountPromptingPage(container: HTMLElement, controller: PromptingController): () => void {
+export function mountPromptingPage(container: HTMLElement, controller: PromptingPort): () => void {
   container.innerHTML = PROMPTING_TEMPLATE;
   const root = requiredElement<HTMLElement>(container, '[data-prompting-form]');
   let settings = controller.load();
@@ -293,10 +293,15 @@ export function mountPromptingPage(container: HTMLElement, controller: Prompting
       const completed = await controller.sendPreview(pendingPreviewId);
       pendingPreviewId = undefined;
       preview.hidden = true;
-      setStatus(root, completed.skipped ? completed.response.judgementSummary : `判定已完成，接收 ${completed.response.updates.length} 条更新。`, completed.skipped ? 'info' : 'success');
+      const outcome = completed.outcome;
+      const message = completed.skipped ? completed.response.judgementSummary
+        : outcome?.duplicate ? '这份请求已处理，未重复写入。'
+        : `判定已完成，接收 ${outcome?.acceptedProposalIds.length ?? 0} 条更新，跳过 ${outcome?.rejectedProposals.length ?? 0} 条。`;
+      // The shared commit callback owns the successful write notification.
+      setStatus(root, message);
     } catch (error) {
-      pendingPreviewId = undefined;
-      preview.hidden = true;
+      // A retry of this preview keeps its request ID; a new preview is a new judgement.
+      preview.hidden = false;
       setStatus(root, errorMessage(error), 'error');
     } finally {
       button.disabled = false;

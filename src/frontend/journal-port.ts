@@ -1,4 +1,5 @@
-import type { AchievementPlayerView, ContentModule, PlayerCommand } from '../domain/index.ts';
+import type { ContentModule, RankBadgeKey } from '../domain/index.ts';
+import type { PlayerUseCases } from '../runtime/player-port.ts';
 
 /** Presentation coordinates only. Relationships must be supplied by the data owner. */
 export interface JournalScene {
@@ -8,8 +9,8 @@ export interface JournalScene {
   fogBoundary?: { x: number; width: number; height: number };
   backgrounds?: Array<{ url: string; alt: string; x: number; y: number; width: number; height: number }>;
   positions: Record<string, { x: number; y: number }>;
-  edges: Array<{ from: string; to: string }>;
-  groups?: Array<{ id: string; title: string; nodeIds: string[]; kind?: string; image?: { url: string; alt: string } }>;
+  edges: Array<{ from: string; to: string; completed?: boolean; routing?: 'orthogonal'; points?: Array<{ x: number; y: number }> }>;
+  groups?: Array<{ id: string; title: string; nodeIds: string[]; kind?: string; unlocked?: boolean; rootNodeId?: string; aliases?: string[]; tags?: string[]; recommendedRank?: string; startNewRow?: boolean; image?: { url: string; alt: string } }>;
   abilityOwners?: Array<{
     id: string;
     title: string;
@@ -17,15 +18,16 @@ export interface JournalScene {
     image?: { url: string; alt: string };
     trees: Array<{ id: string; title: string; nodeIds: string[] }>;
   }>;
+  bestiaryBookCover?: { url: string; alt: string };
+  rankBadges?: Partial<Record<RankBadgeKey, { url: string; alt: string }>>;
   images?: Record<string, { url: string; alt: string }>;
 }
 
-export interface JournalPort {
-  getPlayerView(): AchievementPlayerView;
+export interface JournalPort extends PlayerUseCases {
   getPlayerScene?(module: ContentModule): JournalScene;
-  dispatchPlayerCommand(command: PlayerCommand): Promise<AchievementPlayerView>;
   mountSettings?(container: HTMLElement): () => void;
   mountPrompting?(container: HTMLElement): () => void;
+  mountVersions?(container: HTMLElement): () => void;
 }
 
 export interface JournalOptions {
@@ -45,6 +47,10 @@ export const sections = [
 
 export function element<K extends keyof HTMLElementTagNameMap>(doc: Document, tag: K, className = '', text?: string) {
   const result = doc.createElement(tag);
+  if (tag === 'img') {
+    (result as HTMLImageElement).loading = 'lazy';
+    (result as HTMLImageElement).decoding = 'async';
+  }
   result.className = className;
   if (text !== undefined) result.textContent = text;
   return result;

@@ -14,7 +14,9 @@ import type { ChatSendingStorage } from '../settings/storage.ts';
 
 export class TavernChatContext implements ChatContextPort {
   currentChatId(): string {
-    return SillyTavern.getCurrentChatId();
+    const chatId = SillyTavern.getCurrentChatId();
+    if (typeof chatId !== 'string' || !chatId.trim()) throw new Error('请先打开一个聊天存档。');
+    return chatId;
   }
 
   messages(startFloor: number, endFloor: number): RuntimeChatMessage[] {
@@ -48,14 +50,31 @@ export class TavernChatContext implements ChatContextPort {
   }
 }
 
+async function writeChatMetadataField(key: string, value: unknown): Promise<void> {
+  const chatId = SillyTavern.getCurrentChatId();
+  if (typeof chatId !== 'string' || !chatId.trim()) throw new Error('请先打开一个聊天存档，未写入元数据。');
+  const hadField = Object.hasOwn(SillyTavern.chatMetadata, key);
+  const previous = structuredClone(SillyTavern.chatMetadata[key]);
+  SillyTavern.updateChatMetadata({ [key]: structuredClone(value) }, false);
+  const target = SillyTavern.chatMetadata;
+  try {
+    await SillyTavern.saveMetadata();
+  } catch (error) {
+    // Restore only this failed field on the original metadata object, never a newly selected chat.
+    if (hadField) target[key] = previous;
+    else delete target[key];
+    throw error;
+  }
+  if (chatId !== SillyTavern.getCurrentChatId()) throw new Error('保存期间切换了聊天，请返回原聊天查看保存结果。');
+}
+
 export class TavernAchievementMetadata implements AchievementMetadataPort {
   read(): unknown {
     return SillyTavern.chatMetadata.goblin_achievements;
   }
 
   async write(nextState: Record<string, unknown>): Promise<void> {
-    SillyTavern.updateChatMetadata({ goblin_achievements: nextState }, false);
-    await SillyTavern.saveMetadata();
+    await writeChatMetadataField('goblin_achievements', nextState);
   }
 }
 
@@ -65,8 +84,7 @@ export class TavernChatSendingStorage implements ChatSendingStorage {
   }
 
   async write(settings: Parameters<ChatSendingStorage['write']>[0]): Promise<void> {
-    SillyTavern.updateChatMetadata({ goblin_achievements_sending: structuredClone(settings) }, false);
-    await SillyTavern.saveMetadata();
+    await writeChatMetadataField('goblin_achievements_sending', settings);
   }
 }
 

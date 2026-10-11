@@ -38,11 +38,11 @@
       "module":"abilities","moduleName":"战斗与技艺",
       "owners":[{"skillOwnerId":"actor.demo","skillOwnerName":"示例持有者"}],
       "skillTrees":[{"skillTreeId":"skillTree.demo","skillTreeName":"示例技能","skillOwnerId":"actor.demo"}],
-      "combatTrees":[{"combatTreeId":"combatTree.demo","combatTreeName":"示例挑战","keywords":["示例挑战"]}],
+      "combatTrees":[{"combatTreeId":"combatTree.demo","combatTreeName":"示例挑战","keywords":["示例挑战"],"rootNodeId":"combat.demo.first"}],
       "nodes":[
         {"nodeId":"ability.demo.first","nodeName":"基础技能","nodeKind":"skill","skillTreeId":"skillTree.demo","condition":"技术样例：完成技能任务。"},
         {"nodeId":"ability.demo.second","nodeName":"进阶技能","nodeKind":"skill","skillTreeId":"skillTree.demo","condition":"技术样例：完成进阶技能。","prerequisiteNodeIds":["ability.demo.first"]},
-        {"nodeId":"combat.demo.first","nodeName":"基础挑战","nodeKind":"combat","combatTreeId":"combatTree.demo","condition":"技术样例：完成挑战。"}
+        {"nodeId":"combat.demo.first","nodeName":"基础挑战","nodeKind":"combat","combatTreeId":"combatTree.demo","condition":"技术样例：完成挑战。","description":"通用图鉴技术样例。"}
       ]
     },
     "knowledge": {

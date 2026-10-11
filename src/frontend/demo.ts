@@ -1,9 +1,15 @@
-import { applyPlayerCommand, buildPlayerView, emptyAchievementSave, exampleCatalog } from '../domain/index.ts';
+import { applyPlayerCommand, buildPlayerView, emptyAchievementSave } from '../domain/index.ts';
+import { exampleCatalog } from '../content/examples.ts';
 import { bundledLayouts } from '../content/index.ts';
 import { bundledContentImages } from '../content/images.ts';
 import { buildJournalScene } from './view-scene.ts';
 import { mountJournal } from './journal.ts';
-import type { JournalPort } from './journal-port.ts';
+import { element, type JournalPort } from './journal-port.ts';
+
+const previewNotice = element(document, 'p', 'journal-preview-notice');
+previewNotice.setAttribute('role', 'status'); document.body.append(previewNotice);
+const showPreviewNotice = (message: string) => { previewNotice.textContent = message; };
+window.toastr = { success: showPreviewNotice, error: showPreviewNotice, info: showPreviewNotice };
 
 // Isolated preview only: never accesses host storage, chat, APIs or live progress.
 const catalog = exampleCatalog;

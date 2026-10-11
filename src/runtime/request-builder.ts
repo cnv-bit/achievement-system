@@ -1,3 +1,4 @@
+import { prerequisiteIds } from '../domain/dependencies.ts';
 import type {
   AchievementSave,
   CandidateNode,
@@ -29,6 +30,7 @@ interface RequestBuildInput {
   allowedModules: ContentModule[];
   bodies: SelectedAssistantBody[];
   userMessages?: RuntimeChatMessage[];
+  includeUserInput?: boolean;
   matchOptions?: KeywordMatchOptions;
   selectedGroupIds: string[];
   context: ModelContext;
@@ -57,7 +59,8 @@ function scopedNodeIds(groups: ModelGroup[], context: ModelContext, input: Reque
   do {
     removed = false;
     for (const group of groups) for (const node of group.nodes) {
-      if (ids.has(node.nodeId) && !isTaskNode(group.module, node) && node.prerequisiteNodeIds?.some(id => !ids.has(id) && !completedOtherChapter(id, node.nodeId, input))) {
+      if (input.catalog.schemaVersion === 3 && group.module === 'adventure') continue;
+      if (ids.has(node.nodeId) && !isTaskNode(group.module, node) && prerequisiteIds(node).some(id => !ids.has(id) && !completedOtherChapter(id, node.nodeId, input))) {
         ids.delete(node.nodeId);
         removed = true;
       }
@@ -76,13 +79,14 @@ function completedOtherChapter(id: string, nodeId: string, input: RequestBuildIn
   return (prerequisite.chapterId ?? tree.chapterId) !== input.context.currentChapterId;
 }
 
-function groupMaterial(group: ModelGroup, save: AchievementSave, nodeIds: Set<string>): ModelRequest['moduleContext'][number] {
+function groupMaterial(group: ModelGroup, input: RequestBuildInput, nodeIds: Set<string>): ModelRequest['moduleContext'][number] {
+  const save = input.save, wholeStory = input.catalog.schemaVersion === 3 && group.module === 'adventure';
   return {
     module: group.module, groupId: group.id, label: group.label, parentIds: [...group.parentIds],
     nodes: group.nodes.filter(node => nodeIds.has(node.nodeId)).map(node => ({
       nodeId: node.nodeId, nodeName: node.nodeName, condition: node.condition,
-      prerequisiteNodeIds: (node.prerequisiteNodeIds ?? []).filter(id => nodeIds.has(id)),
-      ...((node.prerequisiteNodeIds ?? []).some(id => !nodeIds.has(id)) ? { externalPrerequisitesSatisfied: true as const } : {}),
+      prerequisiteNodeIds: wholeStory ? prerequisiteIds(node) : prerequisiteIds(node).filter(id => nodeIds.has(id)),
+      ...(prerequisiteIds(node).some(id => !nodeIds.has(id)) && (!wholeStory || prerequisiteIds(node).filter(id => !nodeIds.has(id)).every(id => save.nodeProgress[id])) ? { externalPrerequisitesSatisfied: true as const } : {}),
       ...(node.choiceGroupId ? { choiceGroupId: node.choiceGroupId } : {}),
       ...(group.module === 'bonds' ? { allowsMemento: 'allowsMemento' in node && node.allowsMemento === true } : {}),
       status: isTaskNode(group.module, node) ? 'active' : save.nodeProgress[node.nodeId] ? 'unlocked' : 'locked',
@@ -98,16 +102,17 @@ export function buildChildApiRequest(input: RequestBuildInput): ModelRequest {
   const texts = [...(input.userMessages ?? []).filter(message => message.role === 'user').map(message => message.text), ...input.bodies.map(body => body.assistant.text)];
   const keywordHit = (group: ModelGroup) => group.keywords.some(key => texts.some(text => matchesWorldbookKey(text, key, input.matchOptions ?? { caseSensitive: false, matchWholeWords: false })));
   const groups = admittedModelGroups(input.catalog, context).filter(group => enabled.includes(group.module) && (
-    group.module === 'adventure' || group.module === 'careers' || group.module === 'knowledge' ||
-    (group.module === 'abilities' && group.nodes.some(node => isTaskNode(group.module, node))) ||
+    group.module === 'careers' || group.module === 'knowledge' ||
+    (group.module === 'abilities' && group.nodes.some(node => 'nodeKind' in node && node.nodeKind === 'skill')) ||
     (group.module === 'travel' ? input.selectedGroupIds.includes(group.id) : keywordHit(group))
   ));
   const admittedNodeIds = scopedNodeIds(groups, context, input);
-  const moduleContext = groups.map(group => groupMaterial(group, input.save, admittedNodeIds)).filter(group => group.nodes.length > 0);
+  const moduleContext = groups.map(group => groupMaterial(group, input, admittedNodeIds)).filter(group => group.nodes.length > 0);
   const allowedModules = enabled.filter(module => module === 'journal' || moduleContext.some(group => group.module === module));
   const candidates: CandidateNode[] = moduleContext.flatMap(group => group.nodes.filter(node => node.status !== 'unlocked').map(node => ({
     module: group.module, nodeId: node.nodeId, condition: node.condition, prerequisiteIds: [...node.prerequisiteNodeIds],
     ...(group.module === 'bonds' ? { personId: group.groupId } : {}),
+    ...(group.module === 'abilities' ? { nodeKind: input.catalog.modules.abilities.nodes.find(n => n.nodeId === node.nodeId)!.nodeKind } : {}),
   })));
   return {
     schemaVersion: 1,
@@ -115,7 +120,13 @@ export function buildChildApiRequest(input: RequestBuildInput): ModelRequest {
     chatId: input.chatId,
     baseRevision: input.save.revision,
     allowedModules,
-    storyMessages: storyMessages(input.bodies),
+    storyMessages: [
+      ...(input.includeUserInput ? (input.userMessages ?? []).filter(message => message.role === 'user').map(message => ({
+        id: `message-${message.id}`, role: 'user' as const, text: message.text,
+        turnIndex: input.bodies.find(body => body.assistant.id > message.id)?.turnIndex ?? input.bodies.at(-1)?.turnIndex ?? 0,
+      })) : []),
+      ...storyMessages(input.bodies),
+    ].sort((left, right) => Number(left.id.slice(8)) - Number(right.id.slice(8))),
     worldContext: [...input.worldContext],
     variables: structuredClone(input.context.variables),
     candidates,

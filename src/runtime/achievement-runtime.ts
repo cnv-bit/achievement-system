@@ -19,8 +19,8 @@ import { AchievementMetadataRepository } from './metadata.ts';
 import type { ChatContextPort, RuntimeChatMessage, TextGenerationPort, VariableContextPort, WorldbookPort } from './ports.ts';
 import { buildChildApiRequest } from './request-builder.ts';
 import type { ModelRequest } from './request-builder.ts';
-import { admittedModelGroups, type ModelContext, type ModelContextReader, type ModelGroupOption } from './model-context.ts';
-import { applyChildApiResponse } from './response-application.ts';
+import { admittedModelGroups, catalogModelContext, type ModelContext, type ModelContextReader, type ModelGroupOption } from './model-context.ts';
+import { applyChildApiResponseWithOutcome, type ResponseApplicationResult } from '../domain/response-application.ts';
 import { parseChildApiResponseText } from './response-parser.ts';
 
 export interface ManualRunSelection {
@@ -35,6 +35,7 @@ export interface RuntimeRunResult {
   response: ChildApiResponse;
   save: AchievementSave;
   skipped?: true;
+  outcome?: Omit<ResponseApplicationResult, 'save'>;
 }
 
 export interface RuntimePreview {
@@ -54,6 +55,7 @@ interface RuntimeDependencies {
   worldbooks: WorldbookPort;
   variables: VariableContextPort;
   readModelContext?: ModelContextReader;
+  onModelCommitted?: (result: RuntimeRunResult) => void;
 }
 
 interface PreparedRequest {
@@ -63,6 +65,7 @@ interface PreparedRequest {
   bodies: SelectedAssistantBody[];
   context: ModelContext;
   userInputFloors: number[];
+  catalogSnapshot: string;
 }
 
 interface PendingManualPreview {
@@ -72,6 +75,12 @@ interface PendingManualPreview {
   selection: ManualRunSelection;
   prepared: PreparedRequest;
   prompts: NamedPrompt[];
+}
+
+interface RunContext {
+  selection: ManualRunSelection;
+  settings: RuntimeSettings;
+  mode: 'manual' | 'automatic';
 }
 
 function sourceMessages(bodies: SelectedAssistantBody[]): RuntimeChatMessage[] {
@@ -101,6 +110,7 @@ function responseContext(request: ChildApiRequest, activePersonIds: string[]): R
     allowedModules: request.allowedModules,
     candidateNodeIds,
     activePersonIds,
+    combatCandidateNodeIds: request.candidates.filter(c => c.module === 'abilities' && c.nodeKind === 'combat').map(c => c.nodeId),
   };
 }
 
@@ -143,9 +153,10 @@ export class AchievementRuntime {
 
   async setCurrentChapter(chapterId: string): Promise<void> {
     if (!this.chapters().some(chapter => chapter.chapterId === chapterId)) throw new Error('请选择有效的当前剧情章节。');
-    const save = this.dependencies.metadata.load();
-    if (save.currentChapterId === chapterId) return;
-    await this.dependencies.metadata.save({ ...save, currentChapterId: chapterId, revision: save.revision + 1 });
+    await this.dependencies.metadata.commit(save => ({
+      save: save.currentChapterId === chapterId ? save : { ...save, currentChapterId: chapterId, revision: save.revision + 1 },
+      result: undefined,
+    }));
     this.pendingManualPreview = undefined;
   }
 
@@ -157,8 +168,9 @@ export class AchievementRuntime {
 
   private readContext(messageId: number): ModelContext {
     const reader = this.dependencies.readModelContext;
-    const context = reader ? structuredClone(reader(messageId, this.dependencies.variables.read(messageId))) : { canSend: {}, variables: {} } as ModelContext;
-    const chapterId = context.currentChapterId ?? this.dependencies.metadata.load().currentChapterId;
+    const save = this.dependencies.metadata.load();
+    const context = reader ? structuredClone(reader(messageId, this.dependencies.variables.read(messageId))) : this.dependencies.catalog.schemaVersion === 3 ? catalogModelContext(this.dependencies.catalog, save) : { canSend: {}, variables: {} } as ModelContext;
+    const chapterId = context.currentChapterId ?? save.currentChapterId;
     if (chapterId !== undefined) context.currentChapterId = chapterId;
     return context;
   }
@@ -170,7 +182,7 @@ export class AchievementRuntime {
     requireModules(modules);
     const bodies = selectAssistantBodies(this.dependencies.chat.messages(0, selection.endFloor), selection);
     if (bodies.length === 0) throw new Error('所选楼层内没有可用的助手正文。');
-    const prepared = await this.prepareRequest(settings, modules, bodies, selection);
+    const prepared = await this.prepareRequest(settings, modules, bodies, { selection, mode: 'manual' });
     this.assertCurrent(prepared, selection, settings);
     const prompts = prepared.request.allowedModules.length ? buildOrderedPrompts(settings, prepared.request) : [];
     const previewId = prepared.request.requestId;
@@ -187,13 +199,16 @@ export class AchievementRuntime {
   async sendPreview(previewId: string): Promise<RuntimeRunResult> {
     const pending = this.pendingManualPreview;
     if (!pending || pending.previewId !== previewId) throw new Error('这份预览已失效，请重新生成后再发送。');
-    this.pendingManualPreview = undefined;
     this.assertCurrent(pending.prepared, pending.selection, pending.settings);
-    if (!pending.prepared.request.allowedModules.length) return this.skippedResult(pending.prepared);
+    if (!pending.prepared.request.allowedModules.length) {
+      this.pendingManualPreview = undefined;
+      return this.skippedResult(pending.prepared);
+    }
     requireRunnable(pending.settings, pending.modules);
     const rawResponse = await this.generate(pending.settings, pending.prepared.request, pending.prompts);
-    this.assertCurrent(pending.prepared, pending.selection, pending.settings);
-    return this.commitResponse(pending.prepared, rawResponse);
+    const result = await this.commitResponse(pending.prepared, rawResponse, { selection: pending.selection, settings: pending.settings, mode: 'manual' });
+    if (this.pendingManualPreview === pending) this.pendingManualPreview = undefined;
+    return result;
   }
 
   async runManual(selection: ManualRunSelection): Promise<RuntimeRunResult> {
@@ -203,7 +218,7 @@ export class AchievementRuntime {
     requireModules(modules);
     const bodies = selectAssistantBodies(this.dependencies.chat.messages(0, selection.endFloor), selection);
     if (bodies.length === 0) throw new Error('所选楼层内没有可用的助手正文。');
-    return this.execute(settings, modules, bodies, selection);
+    return this.execute(settings, modules, bodies, { selection, mode: 'manual' });
   }
 
   async runAutomatic(endFloor: number): Promise<RuntimeRunResult | undefined> {
@@ -216,25 +231,25 @@ export class AchievementRuntime {
     const admittedSettings = structuredClone(settings);
     admittedSettings.sending.enabledModuleIds = settings.sending.enabledModuleIds.filter(module => context.canSend[module] === true);
     if (!shouldAutomaticallyRun(admittedSettings, save, allBodies)) return undefined;
-    // Bound the user-input scan to the same recent floor window, not all chat history.
-    const rounds = settings.sending.autoEveryRounds === 1 ? 1 : settings.sending.bodyRounds;
-    const previousBody = allBodies.at(-rounds - 1);
-    return this.runManual({ startFloor: previousBody ? previousBody.assistant.id + 1 : 0, endFloor, maxRounds: rounds });
+    // Cadence may skip rounds, but automatic material always contains only the newest round.
+    const previousBody = allBodies.at(-2);
+    const selection = { startFloor: previousBody ? previousBody.assistant.id + 1 : 0, endFloor, maxRounds: 1 };
+    return this.execute(settings, admittedSettings.sending.enabledModuleIds, allBodies.slice(-1), { selection, mode: 'automatic' });
   }
 
   private async execute(
     settings: RuntimeSettings,
     modules: ContentModule[],
     bodies: SelectedAssistantBody[],
-    selection: ManualRunSelection,
+    options: Pick<RunContext, 'selection' | 'mode'>,
   ): Promise<RuntimeRunResult> {
-    const prepared = await this.prepareRequest(settings, modules, bodies, selection);
+    const { selection, mode } = options;
+    const prepared = await this.prepareRequest(settings, modules, bodies, options);
     this.assertCurrent(prepared, selection, settings);
     if (!prepared.request.allowedModules.length) return this.skippedResult(prepared);
     requireRunnable(settings, modules);
     const rawResponse = await this.generate(settings, prepared.request);
-    this.assertCurrent(prepared, selection, settings);
-    return this.commitResponse(prepared, rawResponse);
+    return this.commitResponse(prepared, rawResponse, { selection, settings, mode });
   }
 
   private skippedResult(prepared: PreparedRequest): RuntimeRunResult {
@@ -249,8 +264,9 @@ export class AchievementRuntime {
     settings: RuntimeSettings,
     modules: ContentModule[],
     bodies: SelectedAssistantBody[],
-    selection: ManualRunSelection,
+    options: Pick<RunContext, 'selection' | 'mode'>,
   ): Promise<PreparedRequest> {
+    const { selection, mode } = options;
     const chatId = this.dependencies.chat.currentChatId();
     const users = selectUserMessages(this.dependencies.chat.messages(selection.startFloor, selection.endFloor), selection);
     const preparedBodies = filteredBodies(bodies, settings);
@@ -260,20 +276,22 @@ export class AchievementRuntime {
     }
     const save = this.dependencies.metadata.load();
     const matchOptions = this.dependencies.chat.keywordMatchOptions();
+    const catalogSnapshot = JSON.stringify(this.dependencies.catalog);
     const worldContext = await loadBoundWorldbookContext(
       this.dependencies.worldbooks,
       settings.worldbooks,
       users,
       matchOptions,
     );
-    const ticket = createRequestTicket(chatId, [...users, ...sourceMessages(bodies)].sort((left, right) => left.id - right.id), modules, {
-      stateRevision: save.revision,
+    const ticket = createRequestTicket(chatId, [...users, ...sourceMessages(bodies)].sort((left, right) => left.id - right.id), modules, { material: {
       selectedGroupIds: [...settings.sending.selectedGroupIds].sort(),
       tagFilter: settings.sending.tagFilter,
       prompts: settings.prompts,
       context,
       worldContext: worldContext.map(entry => [entry.worldbookName, entry.uid, entry.content]),
-    });
+      catalogSnapshot,
+      packBinding: [save.packId ?? null, save.packVersion ?? null, save.packHash ?? null],
+    }, ...(mode === 'manual' ? { intentId: crypto.randomUUID() } : {}) });
     const request = buildChildApiRequest({
       requestId: ticket.requestId,
       chatId,
@@ -282,6 +300,7 @@ export class AchievementRuntime {
       allowedModules: modules,
       bodies: preparedBodies,
       userMessages: users,
+      includeUserInput: mode === 'automatic',
       matchOptions,
       selectedGroupIds: settings.sending.selectedGroupIds,
       context,
@@ -289,11 +308,11 @@ export class AchievementRuntime {
     });
     if (!modules.some(module => context.canSend[module] === true)) throw new Error('所选模块尚未获得数据侧的发送准入，请先接入 canSend 白名单。');
     const activePersonIds = request.moduleContext.filter(group => group.module === 'bonds').map(group => group.groupId);
-    return { request, ticket, activePersonIds, bodies: preparedBodies, context, userInputFloors: users.map(message => message.id) };
+    return { request, ticket, activePersonIds, bodies: preparedBodies, context, userInputFloors: users.map(message => message.id), catalogSnapshot };
   }
 
-  private async commitResponse(prepared: PreparedRequest, rawResponse: string): Promise<RuntimeRunResult> {
-    const currentSave = this.dependencies.metadata.load();
+  private async commitResponse(prepared: PreparedRequest, rawResponse: string, context: RunContext): Promise<RuntimeRunResult> {
+    const { selection, settings, mode } = context;
     const lastBody = prepared.bodies.at(-1)!;
     const parsedResponse = {
       ...parseChildApiResponseText(rawResponse),
@@ -302,16 +321,22 @@ export class AchievementRuntime {
       chatId: prepared.request.chatId,
       baseRevision: prepared.request.baseRevision,
     };
-    const nextSave = applyChildApiResponse({
-      catalog: this.dependencies.catalog,
-      save: currentSave,
-      response: parsedResponse,
-      requestContext: responseContext(prepared.request, prepared.activePersonIds),
-      processedThrough: { messageId: `message-${lastBody.assistant.id}`, turnIndex: lastBody.turnIndex },
-      now: new Date().toISOString(),
+    const result = await this.dependencies.metadata.commit(currentSave => {
+      if (this.dependencies.chat.currentChatId() !== prepared.request.chatId) throw new Error('聊天已切换，本次结果未写入。');
+      if (!currentSave.appliedRequestIds.includes(prepared.request.requestId)) this.assertCurrent(prepared, selection, settings);
+      const applied = applyChildApiResponseWithOutcome({
+        catalog: this.dependencies.catalog,
+        save: currentSave,
+        response: parsedResponse,
+        requestContext: responseContext(prepared.request, prepared.activePersonIds),
+        ...(mode === 'automatic' ? { processedThrough: { messageId: `message-${lastBody.assistant.id}`, turnIndex: lastBody.turnIndex } } : {}),
+        now: new Date().toISOString(),
+      });
+      const { save, ...outcome } = applied;
+      return { save, result: { request: prepared.request, response: parsedResponse as ChildApiResponse, save, outcome } };
     });
-    await this.dependencies.metadata.save(nextSave);
-    return { request: prepared.request, response: parsedResponse as ChildApiResponse, save: nextSave };
+    this.dependencies.onModelCommitted?.(result);
+    return result;
   }
 
   private async generate(settings: RuntimeSettings, request: ChildApiRequest, prompts = buildOrderedPrompts(settings, request)): Promise<string> {
@@ -330,6 +355,7 @@ export class AchievementRuntime {
   }
 
   private assertCurrent(prepared: PreparedRequest, selection: ManualRunSelection, settings: RuntimeSettings): void {
+    if (JSON.stringify(this.dependencies.catalog) !== prepared.catalogSnapshot) throw new Error('成就内容发生变化，本次结果未写入，请重新预览。');
     const messages = this.dependencies.chat.messages(0, selection.endFloor);
     const bodies = selectAssistantBodies(messages, selection);
     const users = selectUserMessages(messages, selection);
@@ -338,7 +364,6 @@ export class AchievementRuntime {
     }
     if (JSON.stringify(this.dependencies.settings.load()) !== JSON.stringify(settings)) throw new Error('已保存配置发生变化，请重新预览；本次结果未写入。');
     if (JSON.stringify(this.readContext(prepared.bodies.at(-1)!.assistant.id)) !== JSON.stringify(prepared.context)) throw new Error('数据侧发送准入或变量发生变化，请重新预览；本次结果未写入。');
-    if (this.dependencies.metadata.load().revision !== prepared.request.baseRevision) throw new Error('成就存档已变化，请重新预览；本次结果未写入。');
   }
 }
 

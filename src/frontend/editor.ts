@@ -3,21 +3,21 @@ import { notifications } from '../notifications.ts';
 
 export function openEditor(
   host: HTMLElement,
-  initial: { nodeName?: string; text: string },
-  save: (value: { nodeName: string; text: string }) => Promise<void>,
+  initial: { nodeName?: string; title?: string; text: string },
+  save: (value: { nodeName: string; title: string; text: string }) => Promise<void>,
 ) {
   const doc = host.ownerDocument;
   const previousFocus = doc.activeElement as HTMLElement | null;
   const dialog = element(doc, 'dialog', 'journal-editor');
   dialog.setAttribute('aria-label', '编辑手账');
   const form = element(doc, 'form');
-  const titleLabel = element(doc, 'label', '', '名字');
+  const titleLabel = element(doc, 'label', '', initial.title !== undefined ? '日记标题（可选）' : '名字');
   const title = element(doc, 'input');
-  title.value = initial.nodeName ?? '';
+  title.value = initial.nodeName ?? initial.title ?? '';
   title.maxLength = 200;
   title.required = initial.nodeName !== undefined;
   titleLabel.append(title);
-  const textLabel = element(doc, 'label', '', '附文');
+  const textLabel = element(doc, 'label', '', initial.title !== undefined ? '日记正文' : '附文');
   const text = element(doc, 'textarea');
   text.value = initial.text;
   text.required = true;
@@ -32,7 +32,7 @@ export function openEditor(
   const actions = element(doc, 'div', 'journal-editor-actions');
   actions.append(cancel, submit);
   form.append(element(doc, 'h2', '', '在这一页，留下你的文字'));
-  if (initial.nodeName !== undefined) form.append(titleLabel);
+  if (initial.nodeName !== undefined || initial.title !== undefined) form.append(titleLabel);
   form.append(textLabel, error, actions);
   dialog.append(form);
   host.append(dialog);
@@ -45,7 +45,7 @@ export function openEditor(
     submit.disabled = cancel.disabled = true;
     submit.textContent = '保存中…';
     try {
-      await save({ nodeName: title.value, text: text.value });
+      await save({ nodeName: title.value, title: title.value.trim(), text: text.value });
       dialog.close();
     } catch (cause) {
       error.textContent = cause instanceof Error ? cause.message : '保存失败，请重试。';

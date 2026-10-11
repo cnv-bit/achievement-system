@@ -1,6 +1,7 @@
 import type { RuntimeSettings } from './model.ts';
+import type { SecretState, SecretsPort } from './ports.ts';
 
-export interface SecretState { hasTextApiKey: boolean; hasImageApiKey: boolean }
+export type { SecretState } from './ports.ts';
 export type BackendRequest = (route: string, body?: unknown) => Promise<unknown>;
 
 export const requestBackend: BackendRequest = async (route, body = {}) => {
@@ -17,7 +18,7 @@ export const requestBackend: BackendRequest = async (route, body = {}) => {
   return response.json();
 };
 
-export class BackendSecrets {
+export class BackendSecrets implements SecretsPort {
   private readonly request: BackendRequest;
   private readonly legacy: Pick<Storage, 'getItem' | 'removeItem'>;
 

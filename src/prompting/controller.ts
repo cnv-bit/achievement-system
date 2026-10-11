@@ -2,8 +2,9 @@ import type { ContentModule } from '../domain/index.ts';
 import { AchievementRuntime, type RuntimePreview, type RuntimeRunResult } from '../runtime/achievement-runtime.ts';
 import { validateSettings, type RuntimeSettings } from '../settings/model.ts';
 import { SettingsRepository } from '../settings/storage.ts';
+import type { PromptingPort } from './ports.ts';
 
-export class PromptingController {
+export class PromptingController implements PromptingPort {
   private readonly repository: SettingsRepository;
   private readonly runtime: AchievementRuntime;
 

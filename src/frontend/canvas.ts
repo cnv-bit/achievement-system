@@ -48,8 +48,12 @@ export function mountCanvas(
     const end = points.get(edge.to);
     if (!start || !end) continue;
     const path = doc.createElementNS(svg.namespaceURI, 'path');
-    const middle = (start.x + end.x) / 2;
-    path.setAttribute('d', `M${start.x},${start.y} C${middle},${start.y} ${middle},${end.y} ${end.x},${end.y}`);
+    if (edge.completed !== undefined) path.setAttribute('class', edge.completed ? 'is-completed' : 'is-pending');
+    const bend = edge.points?.[0], middle = bend?.x ?? (start.x + end.x) / 2;
+    path.setAttribute('d', edge.routing === 'orthogonal'
+      ? `M${start.x},${start.y} H${middle} V${bend?.y ?? end.y} H${end.x} V${end.y}`
+      : bend ? `M${start.x},${start.y} Q${bend.x},${bend.y} ${end.x},${end.y}` : `M${start.x},${start.y} C${middle},${start.y} ${middle},${end.y} ${end.x},${end.y}`);
+    if (edge.routing === 'orthogonal') path.setAttribute('stroke-linejoin', 'round');
     svg.append(path);
   }
   for (const background of scene.backgrounds ?? []) {

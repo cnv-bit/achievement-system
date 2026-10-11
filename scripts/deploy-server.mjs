@@ -2,7 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 
-const source = new URL('../src/server/index.mjs', import.meta.url);
+const source = new URL('../dist/goblin-achievements-server.mjs', import.meta.url);
+if (!fs.existsSync(source)) throw new Error('Run npm run build before deploying the server plugin.');
 const [tavernArgument] = process.argv.slice(2);
 if (!tavernArgument) throw new Error('Usage: node scripts/deploy-server.mjs <SillyTavern-root>');
 const targetDir = path.join(path.resolve(tavernArgument), 'plugins', 'goblin-achievements');

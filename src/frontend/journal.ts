@@ -1,9 +1,10 @@
-import type { ContentModule, PlayerNodeView, PlayerCommand } from '../domain/index.ts';
+import type { AchievementPlayerView, ContentModule, PlayerNodeView, PlayerCommand } from '../domain/index.ts';
 import { notifications } from '../notifications.ts';
 import { mountCanvas } from './canvas.ts';
+import { buildMonsterDossier } from './bestiary-dossier.ts';
 import { openEditor } from './editor.ts';
 import { buildAbilityOwnerViews, buildBondPersonViews, buildCareerTreeViews, buildKnowledgeTreeViews, type JournalTreeView } from './journal-layout.ts';
-import { button, element, sections, type JournalOptions, type JournalPort } from './journal-port.ts';
+import { button, element, sections, type JournalOptions, type JournalPort, type JournalScene } from './journal-port.ts';
 
 export function mountJournal(host: HTMLElement, port: JournalPort, options: JournalOptions = {}) {
   const doc = host.ownerDocument;
@@ -42,7 +43,7 @@ export function mountJournal(host: HTMLElement, port: JournalPort, options: Jour
   book.append(sidebar, page);
   host.append(book);
 
-  let current: ContentModule | 'settings' | 'prompting' = 'adventure';
+  let current: ContentModule | 'settings' | 'prompting' | 'versions' = 'adventure';
   let view = port.getPlayerView();
   let pinned: string | undefined;
   let shown: string | undefined;
@@ -57,6 +58,10 @@ export function mountJournal(host: HTMLElement, port: JournalPort, options: Jour
   let selectedAbilityOwner: string | undefined;
   let selectedBondPerson: string | undefined;
   let selectedCareerTree: string | undefined;
+  let bestiaryOpen = false;
+  let selectedCombatTree: string | undefined;
+
+  function isCombat(node: PlayerNodeView): boolean { return node.module === 'abilities' && node.nodeKind === 'combat'; }
 
   function clearTimer() { clearTimeout(closeTimer); }
   function closeDetail(restoreFocus = false) {
@@ -84,6 +89,7 @@ export function mountJournal(host: HTMLElement, port: JournalPort, options: Jour
     notifications.success(successMessage);
   }
   function edit(node: PlayerNodeView) {
+    if (isCombat(node)) return;
     if (!node.card) { status.textContent = '这一节点还没有可编辑的附言卡。'; return; }
     pinned = node.nodeId;
     openEditor(book, { nodeName: node.nodeName, text: node.card.text }, value => dispatch({
@@ -99,6 +105,10 @@ export function mountJournal(host: HTMLElement, port: JournalPort, options: Jour
     });
   }
   function showDetail(node: PlayerNodeView, trigger: HTMLElement, pin = false) {
+    if (isCombat(node) && !node.unlocked && !node.nodeState) {
+      if (pin) notifications.info('这个成就尚未达成。');
+      return;
+    }
     if (node.nodeState === 'blocked') {
       notifications.info('请先解锁前置条件。');
       return;
@@ -115,18 +125,19 @@ export function mountJournal(host: HTMLElement, port: JournalPort, options: Jour
     const legend = element(doc, 'p', 'journal-overline', pinned ? '这一页，暂且停留' : '途中的一页');
     const title = element(doc, 'h2', '', node.nodeName);
     detail.append(close, legend, title);
-    const scene = current !== 'settings' && current !== 'prompting' ? options.scene?.(current) ?? port.getPlayerScene?.(current) : undefined;
+    const scene = current !== 'settings' && current !== 'prompting' && current !== 'versions' ? options.scene?.(current) ?? port.getPlayerScene?.(current) : undefined;
     const picture = scene?.images?.[node.nodeId];
     if (picture) {
       const url = new URL(picture.url, doc.baseURI);
-      if (url.protocol === 'http:' || url.protocol === 'https:' || url.protocol === 'file:' || url.protocol === 'blob:') {
+      if (url.protocol === 'http:' || url.protocol === 'https:' || url.protocol === 'file:' || url.protocol === 'blob:' || (url.protocol === 'data:' && picture.url.startsWith('data:image/'))) {
         const img = element(doc, 'img', 'journal-detail-image');
         img.src = url.href;
         img.alt = picture.alt;
         detail.append(img);
       }
     }
-    if (node.description && node.description !== node.card?.text) detail.append(element(doc, 'p', 'journal-place', node.description));
+    if (node.authorDescription) detail.append(element(doc, 'p', 'journal-place', node.authorDescription));
+    else if (node.description && node.card && node.description !== node.card.text) detail.append(element(doc, 'p', 'journal-place', node.description));
     const fallback = node.nodeState === 'available' ? '前置条件已经满足，可以接取这一任务。'
       : node.nodeState === 'active' ? '任务已经接取，等待正文确认完成。'
       : node.nodeState === 'claimable' ? '正文已经确认完成，点击节点图标即可领取。'
@@ -140,7 +151,7 @@ export function mountJournal(host: HTMLElement, port: JournalPort, options: Jour
         notifications.error('任务接取失败，未保存。');
       });
     }, 'journal-accept-task'));
-    if (node.card) actions.append(button(doc, '编辑附文', () => edit(node)));
+    if (node.card && !isCombat(node)) actions.append(button(doc, '编辑附文', () => edit(node)));
     if (node.unlocked) actions.append(button(doc, '重新上锁', () => lock(node)));
     detail.append(actions, element(doc, 'span', 'journal-detail-flourish', '✧'));
     detail.hidden = false;
@@ -170,20 +181,25 @@ export function mountJournal(host: HTMLElement, port: JournalPort, options: Jour
     if (node.nodeState) item.dataset.nodeState = node.nodeState;
     item.setAttribute('aria-expanded', 'false');
     item.setAttribute('aria-label', `${node.nodeName}，查看详情`);
-    if (!node.unlocked && !node.nodeState) {
+    const lockedCombat = isCombat(node) && !node.unlocked && !node.nodeState;
+    if (lockedCombat) {
+      item.classList.add('is-combat-locked');
+      item.setAttribute('aria-label', `${node.nodeName}，尚未达成`);
+    }
+    if (!node.unlocked && !node.nodeState && !isCombat(node)) {
       item.classList.add('is-root-entry');
       item.setAttribute('aria-label', `${node.nodeName}，尚未达成的地区入口`);
     }
     if (node.nodeState === 'blocked') item.setAttribute('aria-label', `${node.nodeName}，请先解锁前置条件`);
     if (node.nodeState === 'claimable') item.setAttribute('aria-label', `${node.nodeName}，点击领取成就`);
-    const glyph = node.nodeState === 'active' ? '◆' : node.nodeState === 'claimable' ? '✦' : node.nodeState === 'completed' ? '印' : current === 'travel' ? '◇' : '✧';
+    const glyph = node.nodeState === 'active' ? '◆' : node.nodeState === 'claimable' ? '✦' : node.nodeState === 'completed' || (isCombat(node) && node.unlocked) ? '印' : current === 'travel' ? '◇' : '✧';
     item.append(element(doc, 'span', 'journal-node-ring', glyph), element(doc, 'span', 'journal-node-title', node.nodeName));
     if (node.nodeState) item.append(element(doc, 'span', 'journal-node-state', {
       blocked: '前置不足', available: '可接取', active: '已接取', claimable: '可领取', completed: '已完成',
     }[node.nodeState]));
     if (recent.has(node.nodeId)) item.classList.add('just-unlocked');
     item.addEventListener('animationend', () => { item.classList.remove('just-unlocked'); recent.delete(node.nodeId); });
-    if (node.nodeState !== 'blocked') {
+    if (node.nodeState !== 'blocked' && !lockedCombat) {
       item.addEventListener('pointerenter', () => showDetail(node, item));
       item.addEventListener('pointerleave', stopPeeking);
       item.addEventListener('focus', () => { if (!restoringFocus) showDetail(node, item); });
@@ -191,11 +207,12 @@ export function mountJournal(host: HTMLElement, port: JournalPort, options: Jour
     }
     item.addEventListener('contextmenu', event => {
       event.preventDefault();
+      if (isCombat(node)) { if (node.unlocked) showDetail(node, item, true); return; }
       if (!node.unlocked) { if (node.nodeState === 'blocked') notifications.info('请先解锁前置条件。'); return; }
       showDetail(node, item, true); edit(node);
     });
     item.addEventListener('keydown', event => {
-      if (node.unlocked && (event.key === 'F2' || (event.shiftKey && event.key === 'F10'))) { event.preventDefault(); edit(node); }
+      if (node.unlocked && !isCombat(node) && (event.key === 'F2' || (event.shiftKey && event.key === 'F10'))) { event.preventDefault(); edit(node); }
     });
     return item;
   }
@@ -253,16 +270,26 @@ export function mountJournal(host: HTMLElement, port: JournalPort, options: Jour
         index.append(card);
       }
       content.append(index);
-      const combatCleanups: Array<() => void> = [];
-      for (const group of scene.groups?.filter(g=>g.kind==='combatTree') ?? []) {
-        const sheet = element(doc, 'section', 'journal-tree-sheet');
-        sheet.append(element(doc, 'h2', '', group.title));
-        const cleanup = mountTree(sheet, {id:group.id,title:group.title,nodes:nodes.filter(n=>group.nodeIds.includes(n.nodeId))}, scene, 'abilities');
-        if(cleanup) combatCleanups.push(cleanup);
-        content.append(sheet);
+      const atlas = button(doc, '', () => { bestiaryOpen = true; render(); }, 'journal-bestiary-book');
+      atlas.dataset.bestiaryBook = '';
+      atlas.setAttribute('aria-label', '打开怪物图鉴');
+      if (scene.bestiaryBookCover) {
+        atlas.classList.add('has-cover');
+        const cover = element(doc, 'img', 'journal-bestiary-book-cover');
+        cover.src = scene.bestiaryBookCover.url;
+        cover.alt = scene.bestiaryBookCover.alt;
+        atlas.append(cover);
+      } else {
+        const emblem = element(doc, 'span', 'journal-bestiary-book-emblem', '◇');
+        emblem.setAttribute('aria-hidden', 'true');
+        atlas.append(emblem);
       }
-      cleanupPage = () => combatCleanups.forEach(cleanup=>cleanup());
-      status.textContent = owners.length ? '选择人物，翻阅对应的技能树' : nodes.length ? '翻阅已达成的战斗成就' : '这一页还空着。';
+      const label = element(doc, 'span', 'journal-bestiary-book-copy');
+      label.append(element(doc, 'span', 'journal-bestiary-book-title', '怪物图鉴'), element(doc, 'small', '', '旅途中遇见的生灵'));
+      atlas.append(label);
+      content.append(atlas);
+      status.textContent = '选择人物技能卡，或打开怪物图鉴';
+      if (bestiaryOpen) renderBestiary(nodes, scene);
       return;
     }
 
@@ -290,6 +317,85 @@ export function mountJournal(host: HTMLElement, port: JournalPort, options: Jour
     content.append(subpage);
     cleanupPage = () => cleanups.forEach(cleanup => cleanup());
     status.textContent = 'Ctrl+滚轮缩放 · 中键拖动画布 · 点击节点查看详情';
+  }
+
+  function monsterButton(entry: NonNullable<JournalScene['groups']>[number]) {
+    const item = button(doc, '', () => {
+      if (!entry.unlocked) {
+        item.classList.remove('is-tapped'); void item.offsetWidth; item.classList.add('is-tapped');
+        notifications.info('尚未遇见这种怪物。'); return;
+      }
+      selectedCombatTree = entry.id; render();
+    }, 'journal-monster-entry');
+    item.dataset.combatEntry = entry.id;
+    item.dataset.unlocked = String(entry.unlocked === true);
+    item.setAttribute('aria-label', entry.unlocked ? `打开${entry.title}的成就树` : '尚未遇见的怪物');
+    const ring = element(doc, 'span', 'journal-monster-ring');
+    if (entry.image) {
+      const img = element(doc, 'img'); img.width = img.height = 64;
+      img.src = entry.image.url; img.alt = entry.unlocked ? entry.image.alt : '尚未遇见的怪物'; ring.append(img);
+    } else ring.append(element(doc, 'span', 'journal-monster-placeholder', '?'));
+    item.append(ring, element(doc, 'span', 'journal-monster-name', entry.title));
+    item.addEventListener('animationend', () => item.classList.remove('is-tapped'));
+    return item;
+  }
+
+  function renderBestiary(nodes: PlayerNodeView[], scene: JournalScene) {
+    const entries = scene.groups?.filter(g => g.kind === 'combatTree') ?? [];
+    const selected = entries.find(g => g.id === selectedCombatTree && g.unlocked);
+    if (!selected) selectedCombatTree = undefined;
+    const panel = element(doc, 'dialog', 'journal-bestiary-panel');
+    panel.setAttribute('aria-label', selected ? `${selected.title}的成就树` : '怪物图鉴');
+    const backToIndex = () => {
+      const id = selectedCombatTree;
+      selectedCombatTree = undefined;
+      render();
+      Array.from(content.querySelectorAll<HTMLButtonElement>('[data-combat-entry]')).find(b => b.dataset.combatEntry === id)?.focus();
+    };
+    const closeAtlas = () => {
+      bestiaryOpen = false; selectedCombatTree = undefined; render();
+      content.querySelector<HTMLButtonElement>('[data-bestiary-book]')?.focus();
+    };
+    const bar = element(doc, 'div', 'journal-subpage-bar');
+    if (selected) bar.append(button(doc, '← 返回图鉴', backToIndex, 'journal-back'));
+    const title = element(doc, 'h2', '', selected ? `怪物图鉴 · ${selected.title}` : '怪物图鉴');
+    const close = button(doc, '×', closeAtlas, 'journal-close');
+    close.setAttribute('aria-label', '关闭怪物图鉴');
+    bar.append(title, close); panel.append(bar);
+    let cleanupTree: (() => void) | undefined;
+    if (selected) {
+      const treeNodes = nodes.filter(n => selected.nodeIds.includes(n.nodeId));
+      const spread = element(doc, 'div', 'journal-bestiary-spread');
+      const records = element(doc, 'section', 'journal-monster-records');
+      records.setAttribute('aria-label', `${selected.title}的成就记录`);
+      records.append(element(doc, 'h3', 'journal-dossier-eyebrow', '冒险见闻 · 成就记录'));
+      const sheet = element(doc, 'section', 'journal-tree-sheet');
+      records.append(sheet, element(doc, 'p', 'journal-form-note', 'Ctrl＋滚轮缩放 · 中键拖动 · 灰色成就尚未达成'));
+      spread.append(buildMonsterDossier(doc, selected, treeNodes, scene.rankBadges), records);
+      panel.append(spread);
+      cleanupTree = mountTree(sheet, {id:selected.id,title:selected.title,nodes:treeNodes}, scene, 'abilities');
+    } else {
+      const index = element(doc, 'div', 'journal-bestiary-rows');
+      let row: HTMLDivElement | undefined;
+      for (const entry of entries) {
+        if (!row || entry.startNewRow) {
+          row = element(doc, 'div', 'journal-bestiary-index');
+          index.append(row);
+        }
+        row.append(monsterButton(entry));
+      }
+      if (!entries.length) index.append(element(doc, 'p', 'journal-empty', '尚未预设怪物条目。'));
+      panel.append(index);
+    }
+    // The shared detail panel must be inside the modal to retain pointer and keyboard access.
+    panel.append(detail); content.append(panel); panel.showModal();
+    panel.addEventListener('cancel', event => {
+      event.preventDefault();
+      if (!detail.hidden) closeDetail(true);
+      else if (selectedCombatTree) backToIndex();
+      else closeAtlas();
+    });
+    cleanupPage = () => { cleanupTree?.(); page.append(detail); panel.close(); panel.remove(); };
   }
 
   function renderKnowledge(nodes: PlayerNodeView[], scene: ReturnType<NonNullable<JournalOptions['scene']>>) {
@@ -378,13 +484,13 @@ export function mountJournal(host: HTMLElement, port: JournalPort, options: Jour
 
   function renderNodes(module: Exclude<ContentModule, 'journal'>) {
     const nodes = view.nodes.filter(node => node.module === module);
-    if (!nodes.length) { content.append(element(doc, 'p', 'journal-empty', '这一页还空着。等旅途留下第一笔。')); return; }
     const scene = options.scene?.(module) ?? port.getPlayerScene?.(module) ?? { positions: {}, edges: [] };
     const groups = scene.groups?.filter(group => nodes.some(node => group.nodeIds.includes(node.nodeId))) ?? [];
     if (module === 'abilities') {
       renderAbilities(nodes, scene);
       return;
     }
+    if (!nodes.length) { content.append(element(doc, 'p', 'journal-empty', '这一页还空着。等旅途留下第一笔。')); return; }
     if (module === 'bonds') {
       renderBonds(nodes, scene);
       return;
@@ -416,15 +522,26 @@ export function mountJournal(host: HTMLElement, port: JournalPort, options: Jour
 
   function renderJournal() {
     const leaves = element(doc, 'div', 'journal-leaves');
-    content.append(button(doc, '＋ 写一则日记', () => openEditor(book, { text: '' }, value => dispatch({
-      type: 'addPlayerJournal', journalId: `journal.${crypto.randomUUID()}`, text: value.text, createdAt: new Date().toISOString(),
+    content.append(button(doc, '＋ 写一则日记', () => openEditor(book, { title: '', text: '' }, value => dispatch({
+      type: 'addPlayerJournal', journalId: `journal.${crypto.randomUUID()}`, title: value.title, text: value.text, createdAt: new Date().toISOString(),
     })), 'journal-write'), leaves);
     if (!view.journalEntries.length) leaves.append(element(doc, 'p', 'journal-empty', '今天有什么想留下的吗？'));
     for (const entry of view.journalEntries) {
       const leaf = element(doc, 'article', 'journal-leaf');
-      leaf.append(element(doc, 'time', '', new Date(entry.createdAt).toLocaleDateString('zh-CN')), element(doc, 'p', 'journal-handwritten', entry.text));
-      const open = () => openEditor(book, { text: entry.text }, value => dispatch({ type: 'editJournalEntry', journalId: entry.journalId, text: value.text }));
-      leaf.append(button(doc, '编辑', open));
+      const title = entry.title ?? '无题日记';
+      leaf.append(element(doc, 'time', '', new Date(entry.createdAt).toLocaleDateString('zh-CN')), element(doc, 'h2', 'journal-leaf-title', title), element(doc, 'p', 'journal-handwritten', entry.text));
+      const open = () => openEditor(book, { title: entry.title ?? '', text: entry.text }, value => dispatch({ type: 'editJournalEntry', journalId: entry.journalId, title: value.title, text: value.text }));
+      const remove = button(doc, '删除', () => {
+        if (!doc.defaultView?.confirm(`删除“${title}”？此操作会删除这条日记。`)) return;
+        remove.disabled = true;
+        void dispatch({type:'deleteJournalEntry', journalId:entry.journalId}, '日记已删除。').catch(error => {
+          remove.disabled = false;
+          status.textContent = error instanceof Error ? error.message : '删除日记失败。';
+          notifications.error('删除失败，日记未移除。');
+        });
+      }, 'journal-delete');
+      remove.setAttribute('aria-label', `删除日记：${title}`);
+      leaf.append(button(doc, '编辑', open), remove);
       leaf.addEventListener('contextmenu', event => { event.preventDefault(); open(); });
       leaves.append(leaf);
     }
@@ -438,39 +555,39 @@ export function mountJournal(host: HTMLElement, port: JournalPort, options: Jour
     content.className = `journal-content journal-content-${current}`;
     navigation.forEach((item, key) => { if (key === current) item.setAttribute('aria-current', 'page'); else item.removeAttribute('aria-current'); });
     const section = sections.find(item => item[0] === current);
-    heading.textContent = section?.[1] ?? (current === 'settings' ? '设置' : '提示词与发送');
+    heading.textContent = section?.[1] ?? (current === 'settings' ? '设置' : current === 'versions' ? '内容版本与遗留记录' : '提示词与发送');
     subtitle.textContent = section?.[3] ?? '整理行囊，然后继续旅途。';
     pageNumber.textContent = section ? String(sections.indexOf(section) + 1).padStart(2, '0') : '·';
     status.textContent = '悬停翻阅 · 点击固定 · 右键编辑';
-    if (current === 'settings' || current === 'prompting') {
-      const mount = current === 'settings' ? port.mountSettings : port.mountPrompting;
+    if (current === 'settings' || current === 'prompting' || current === 'versions') {
+      const mount = current === 'settings' ? port.mountSettings : current === 'versions' ? port.mountVersions : port.mountPrompting;
       if (mount) cleanupPage = mount.call(port, content);
       else content.append(element(doc, 'p', 'journal-empty', '预览中保留此入口；接入运行框架后显示配置页面。'));
     } else if (current === 'journal') renderJournal();
     else renderNodes(current);
   }
   for (const [id, label, icon] of sections) {
-    const link = button(doc, '', () => { selectedAbilityOwner = undefined; selectedBondPerson = undefined; selectedCareerTree = undefined; current = id; render(); }, 'journal-tab');
+    const link = button(doc, '', () => { bestiaryOpen = false; selectedCombatTree = undefined; selectedAbilityOwner = undefined; selectedBondPerson = undefined; selectedCareerTree = undefined; current = id; render(); }, 'journal-tab');
     const glyph = element(doc, 'span', 'journal-tab-icon', icon);
     glyph.setAttribute('aria-hidden', 'true');
     link.append(glyph, element(doc, 'span', '', label));
     navigation.set(id, link);
     nav.append(link);
   }
-  for (const [id, label] of [['prompting', '提示词与发送'], ['settings', '设置']] as const) {
-    const link = button(doc, label, () => { selectedAbilityOwner = undefined; selectedBondPerson = undefined; selectedCareerTree = undefined; current = id; render(); }, 'journal-tab');
+  for (const [id, label] of [['prompting', '提示词与发送'], ['settings', '设置'], ...(port.mountVersions ? [['versions', '内容版本与遗留记录'] as const] : [])] as const) {
+    const link = button(doc, label, () => { bestiaryOpen = false; selectedCombatTree = undefined; selectedAbilityOwner = undefined; selectedBondPerson = undefined; selectedCareerTree = undefined; current = id; render(); }, 'journal-tab');
     navigation.set(id, link);
     adminNav.append(link);
   }
   render();
   return {
-    refresh() {
+    refresh(snapshot?: AchievementPlayerView) {
       if (destroyed) return;
-      const next = port.getPlayerView();
+      const next = snapshot ?? port.getPlayerView();
       const oldIds = new Set(view.nodes.filter(node => node.unlocked).map(node => node.nodeId));
       next.nodes.filter(node => node.unlocked && !oldIds.has(node.nodeId)).forEach(node => recent.add(node.nodeId));
       view = next;
-      render();
+      if (current !== 'settings' && current !== 'prompting' && current !== 'versions') render();
     },
     destroy() { destroyed = true; clearTimer(); cleanupPage?.(); book.remove(); },
     getSelection: () => ({ module: current, nodeId: shown, pinned: !!pinned }),

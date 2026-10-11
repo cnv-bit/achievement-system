@@ -1,4 +1,5 @@
-import type { BaseNodeDefinition, ContentCatalog, ContentModule, JsonValue, NodeModule } from '../domain/index.ts';
+import type { AchievementSave, BaseNodeDefinition, ContentCatalog, ContentModule, JsonValue, NodeModule } from '../domain/index.ts';
+import { prerequisiteIds } from '../domain/dependencies.ts';
 
 /** Supplied by the data owner, not inferred from text or worldbook matches. Missing means denied. */
 export interface ModelContext {
@@ -41,16 +42,25 @@ export function admittedModelGroups(catalog: ContentCatalog, context: ModelConte
   return catalogModelGroups(catalog).map(group => {
     if (group.module !== 'adventure') return group;
     const chapterId = context.currentChapterId;
+    if (catalog.schemaVersion === 3) return { ...group, nodes: group.parentIds[0] === chapterId ? group.nodes : [] };
     return { ...group, parentIds: chapterId ? [chapterId] : [], nodes: group.nodes.filter(node =>
       chapterId !== undefined && (('chapterId' in node ? node.chapterId : undefined) ?? group.parentIds[0]) === chapterId) };
-  }).filter(group => group.nodes.length > 0 && [group.module, group.id, ...group.parentIds].every(id => context.canSend[id] === true));
+  }).filter(group => group.nodes.length > 0 && [group.module, group.id, ...group.parentIds].every(id => context.canSend[id] === true)
+    && (catalog.schemaVersion !== 3 || group.module !== 'adventure' || group.nodes.every(node =>
+      [node.nodeId, ...(node.choiceGroupId ? [node.choiceGroupId] : []), ...prerequisiteIds(node)].every(id => context.canSend[id] === true))));
 }
 
-/** Only for the explicitly labelled technical demo, never as the real catalogue fallback. */
-export function skeletonModelContext(catalog: ContentCatalog): ModelContext {
+/** V3 definitions are complete local authority; integrations may supply a narrower whitelist. */
+export function catalogModelContext(catalog: ContentCatalog, save?: AchievementSave): ModelContext {
   const ids: string[] = Object.keys(catalog.modules) as ContentModule[];
   ids.push(...catalog.modules.adventure.chapters.map(chapter => chapter.chapterId));
   for (const group of catalogModelGroups(catalog)) ids.push(group.id, ...group.parentIds, ...group.nodes.map(node => node.nodeId));
   ids.push(...catalog.choiceGroups.map(group => group.choiceGroupId));
-  return { canSend: Object.fromEntries(ids.map(id => [id, true])), variables: {} };
+  const canSend = Object.fromEntries(ids.map(id => [id, true]));
+  if (save) for (const owner of catalog.modules.abilities.owners) {
+    if (owner.revealNodeId && !save.nodeProgress[owner.revealNodeId]) canSend[owner.skillOwnerId] = false;
+  }
+  return { canSend, variables: {} };
 }
+/** Compatibility entry for labelled previews and existing tests. */
+export const skeletonModelContext = catalogModelContext;

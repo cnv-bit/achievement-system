@@ -1,4 +1,6 @@
-export const info = { id: 'goblin-achievements', name: '成就系统密钥与请求', description: '按酒馆账号保存密钥；仅后端使用已保存密钥。' };
+import { registerContentPackRoutes } from './content-packs.mjs';
+import { registerAuthorRoutes } from './authoring.mjs';
+export const info = { id: 'goblin-achievements', name: '成就系统内容与请求', description: '按酒馆账号管理卡带草稿与不可变发布版本；仅后端使用已保存密钥。' };
 const SECRET = 'goblin_achievements_connections_v1';
 
 function baseUrl(value) {
@@ -114,4 +116,6 @@ export async function init(router) {
         });
     };
     registerRoutes(router, { ...secrets, forwardChatCompletion });
+    registerContentPackRoutes(router);
+    registerAuthorRoutes(router);
 }

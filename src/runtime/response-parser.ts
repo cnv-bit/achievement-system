@@ -17,16 +17,6 @@ export function parseChildApiResponseText(source: string): Record<string, unknow
     if (['requestId', 'chatId', 'baseRevision'].some(field => Object.hasOwn(modelResponse, field))) {
       throw new Error('请求标识由程序填写，请从已保存的提示词中移除旧的身份字段要求。');
     }
-    const updates = modelResponse.updates;
-    if (Array.isArray(updates)) {
-      const seen = new Set<string>();
-      for (const update of updates) {
-        const module = typeof update === 'object' && update !== null ? (update as { module?: unknown }).module : undefined;
-        if (typeof module !== 'string') continue;
-        if (seen.has(module)) throw new Error(`模型返回中模块 ${module} 超过一条更新。`);
-        seen.add(module);
-      }
-    }
     return modelResponse;
   } catch (error) {
     if (error instanceof SyntaxError) throw new Error('模型返回的 <achievement-update> 不是有效 JSON。');

@@ -1,4 +1,5 @@
 export const SETTINGS_BUTTON_NAME = '成就系统设置';
+export const AUTHOR_BUTTON_NAME = '成就卡带编辑器';
 export const SETTINGS_DRAWER_TEMPLATE = `
   <div class="inline-drawer-toggle inline-drawer-header">
     <b>成就系统｜文本 API</b>
@@ -12,8 +13,9 @@ interface SettingsButtonHost {
   subscribe(event: string, listener: () => void): { stop(): void };
 }
 
-export function installSettingsButton(host: SettingsButtonHost, openSettings: () => void): () => void {
-  host.replaceButtons([{ name: SETTINGS_BUTTON_NAME, visible: true }]);
+export function installSettingsButton(host: SettingsButtonHost, openSettings: () => void, openAuthor?: () => void): () => void {
+  host.replaceButtons([{ name: SETTINGS_BUTTON_NAME, visible: true }, ...(openAuthor ? [{ name: AUTHOR_BUTTON_NAME, visible: true }] : [])]);
   const subscription = host.subscribe(host.buttonEvent(SETTINGS_BUTTON_NAME), openSettings);
-  return () => subscription.stop();
+  const authorSubscription = openAuthor ? host.subscribe(host.buttonEvent(AUTHOR_BUTTON_NAME), openAuthor) : undefined;
+  return () => { subscription.stop(); authorSubscription?.stop(); };
 }

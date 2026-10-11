@@ -4,10 +4,11 @@ import test from 'node:test';
 import type { TextGenerationPort, TextGenerationRequest } from '../src/runtime/ports.ts';
 import { ApiSettingsController } from '../src/settings/controller.ts';
 import { SettingsRepository, type StringStorage } from '../src/settings/storage.ts';
-import { BackendSecrets } from '../src/settings/backend.ts';
+import type { SecretsPort } from '../src/settings/ports.ts';
 
-const secrets = () => new BackendSecrets(async () => ({ hasTextApiKey: true, hasImageApiKey: false }), {
-  getItem: () => null, removeItem: () => undefined,
+const secrets = (): SecretsPort => ({
+  initialize: async () => ({ hasTextApiKey: true, hasImageApiKey: false }),
+  save: async () => ({ hasTextApiKey: true, hasImageApiKey: false }),
 });
 
 class MemoryStorage implements StringStorage {

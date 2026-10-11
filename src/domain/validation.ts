@@ -1,4 +1,6 @@
 import { ANNOTATION_CARD_STYLES, CONTENT_MODULES } from './types.ts';
+import { branchParentId, prerequisiteIds } from './dependencies.ts';
+import { isAssetRef, isPackKey, packHashPattern } from './asset-reference.ts';
 import type {
     AchievementSave, BaseNodeDefinition, ChildApiResponse, ContentCatalog, ContentLayouts, ContentModule,
     NodeModule, ResponseValidationContext, ValidationIssue, ValidationResult,
@@ -7,6 +9,10 @@ import type {
 type UnknownRecord = Record<string, unknown>;
 const NODE_MODULES = CONTENT_MODULES.filter((module): module is NodeModule => module !== 'journal');
 const MAX_STORED_TEXT_LENGTH = 10_000;
+function safeDependencies(node: UnknownRecord | undefined): unknown[] {
+    if (Array.isArray(node?.dependencies)) return node.dependencies.flatMap(dep => isRecord(dep) && typeof dep.nodeId === 'string' ? [dep.nodeId] : []);
+    return Array.isArray(node?.prerequisiteNodeIds) ? node.prerequisiteNodeIds : [];
+}
 function isRecord(input: unknown): input is UnknownRecord {
     return typeof input === 'object' && input !== null && !Array.isArray(input);
 }
@@ -75,6 +81,12 @@ function reference(value: unknown, known: Set<unknown>, path: string, issues: Va
     if (!known.has(value)) addIssue(issues, path, 'UNKNOWN_REFERENCE', `未知引用：${String(value)}`);
 }
 function image(record: UnknownRecord, path: string, issues: ValidationIssue[]): void {
+    if (record.assetRef !== undefined) {
+        if (!isAssetRef(record.assetRef)) addIssue(issues, `${path}.assetRef`, 'INVALID_VALUE', '须为 assets/ 下的图片相对路径，不能越界');
+        if (record.imageName !== undefined) addIssue(issues, path, 'INVALID_VALUE', 'assetRef 与旧 imageName 不得同时设置');
+        requireBoundedString(record.imageAlt, `${path}.imageAlt`, 500, issues);
+        return;
+    }
     if (record.imageName === undefined && record.imageAlt === undefined) return;
     requireBoundedString(record.imageName, `${path}.imageName`, 200, issues);
     requireBoundedString(record.imageAlt, `${path}.imageAlt`, 500, issues);
@@ -86,11 +98,11 @@ function image(record: UnknownRecord, path: string, issues: ValidationIssue[]): 
 const groups = [
     ['adventure', 'chapters', 'chapterId', 'chapterName', '', '', ['chapterNumber']],
     ['adventure', 'storyTrees', 'storyTreeId', 'storyTreeName', 'chapterId', 'chapterId', ['rootNodeId', 'keywords']],
-    ['bonds', 'people', 'personId', 'personName', '', '', ['keywords', 'lorebookEntry', 'imageName', 'imageAlt']],
+    ['bonds', 'people', 'personId', 'personName', '', '', ['keywords', 'lorebookEntry', 'assetRef', 'imageName', 'imageAlt']],
     ['careers', 'trees', 'careerTreeId', 'careerTreeName', '', '', ['keywords']],
-    ['abilities', 'owners', 'skillOwnerId', 'skillOwnerName', '', '', ['imageName', 'imageAlt', 'revealNodeId']],
+    ['abilities', 'owners', 'skillOwnerId', 'skillOwnerName', '', '', ['assetRef', 'imageName', 'imageAlt', 'revealNodeId']],
     ['abilities', 'skillTrees', 'skillTreeId', 'skillTreeName', 'skillOwnerId', 'skillOwnerId', ['keywords']],
-    ['abilities', 'combatTrees', 'combatTreeId', 'combatTreeName', '', '', ['keywords']],
+    ['abilities', 'combatTrees', 'combatTreeId', 'combatTreeName', '', '', ['keywords', 'rootNodeId', 'aliases', 'tags', 'recommendedRank']],
     ['knowledge', 'domains', 'knowledgeDomainId', 'knowledgeDomainName', '', '', []],
     ['knowledge', 'topics', 'knowledgeTopicId', 'knowledgeTopicName', 'knowledgeDomainId', 'knowledgeDomainId', ['keywords']],
     ['travel', 'maps', 'mapId', 'mapName', '', '', []],
@@ -101,12 +113,13 @@ const nodeParents: Record<NodeModule, string> = {
     abilities: '', knowledge: 'knowledgeTopicId', travel: 'travelRegionId',
 };
 
-export function validateContentCatalog(input: unknown): ValidationResult<ContentCatalog> {
+export function validateContentCatalog(input: unknown, options: { draft?: boolean } = {}): ValidationResult<ContentCatalog> {
     const issues: ValidationIssue[] = [];
     const catalog = requireRecord(input, '$', issues);
     if (!catalog) return { ok: false, issues };
     rejectUnknownFields(catalog, ['schemaVersion', 'modules', 'choiceGroups'], '$', issues);
-    if (catalog.schemaVersion !== 2) addIssue(issues, 'schemaVersion', 'INVALID_VALUE', '内容目录须为版本 2；旧地区层级需要人工指定大章');
+    const typed = catalog.schemaVersion === 3;
+    if (catalog.schemaVersion !== 2 && !typed) addIssue(issues, 'schemaVersion', 'INVALID_VALUE', '内容目录须为版本 2 或 3');
     const modules = requireRecord(catalog.modules, 'modules', issues);
     if (!modules) return { ok: false, issues };
     rejectUnknownFields(modules, [...CONTENT_MODULES], 'modules', issues);
@@ -126,19 +139,26 @@ export function validateContentCatalog(input: unknown): ValidationResult<Content
     const groupRows = new Map<string, UnknownRecord[]>();
     for (const [module, field, id, name, parent, , extras] of groups) {
         const path = `modules.${module}.${field}`;
-        const rows = entries(definitions.get(module)?.[field], path, [id, name, ...(parent ? [parent] : [])], [id, name, ...(parent ? [parent] : []), ...extras], issues);
+        const rows = entries(definitions.get(module)?.[field], path, [id, name, ...(parent ? [parent] : [])], [id, name, ...(parent ? [parent] : []), ...extras, ...(typed && id === 'storyTreeId' ? ['entryNodeId'] : []), ...(id === 'chapterId' ? [] : ['assetRef', 'imageName', 'imageAlt'])], issues);
+        if (id !== 'chapterId' && id !== 'personId' && id !== 'skillOwnerId') rows.forEach((row, i) => image(row, `${path}[${i}]`, issues));
         groupRows.set(id, rows);
         indexed.set(id, new Set(rows.map(row => row[id])));
         if (id !== 'personId') rows.forEach((row, i) => {
             if (row.keywords !== undefined) requireStringArray(row.keywords, `${path}[${i}].keywords`, issues);
         });
+        if (id === 'combatTreeId') rows.forEach((row, i) => {
+            if (row.recommendedRank !== undefined) requireBoundedString(row.recommendedRank, `${path}[${i}].recommendedRank`, 40, issues);
+            for (const field of ['aliases', 'tags']) {
+                if (row[field] !== undefined) requireStringArray(row[field], `${path}[${i}].${field}`, issues);
+            }
+        });
         if (id === 'chapterId') {
             rows.forEach((row, i) => {
-                if (!Number.isInteger(row.chapterNumber) || Number(row.chapterNumber) < 1 || Number(row.chapterNumber) > 5) addIssue(issues, `${path}[${i}].chapterNumber`, 'INVALID_VALUE', '大章编号为 1—5');
+                if (!Number.isInteger(row.chapterNumber) || Number(row.chapterNumber) < 1 || (!typed && Number(row.chapterNumber) > 5)) addIssue(issues, `${path}[${i}].chapterNumber`, 'INVALID_VALUE', '阶段编号必须是正整数');
             });
             const numbers = rows.map(row => String(row.chapterNumber));
             validateUniqueStrings(numbers, path, issues);
-            if (rows.length !== 5 || ![1,2,3,4,5].every(number => rows.some(row => row.chapterNumber === number))) addIssue(issues, path, 'INVALID_VALUE', '目录须定义完整的五个大章；未填剧情的大章可以只有名称');
+            if ((!typed && rows.length !== 5) || !Array.from({ length: rows.length }, (_, i) => i + 1).every(number => rows.some(row => row.chapterNumber === number))) addIssue(issues, path, 'INVALID_VALUE', '阶段编号必须从 1 连续排列；旧目录保留五个大章');
         }
         if (id === 'personId') rows.forEach((row, i) => {
             requireStringArray(row.keywords, `${path}[${i}].keywords`, issues);
@@ -164,18 +184,23 @@ export function validateContentCatalog(input: unknown): ValidationResult<Content
     for (const module of NODE_MODULES) {
         const path = `modules.${module}.${module === 'travel' ? 'locations' : 'nodes'}`;
         const parent = nodeParents[module];
-        const extra = module === 'adventure' ? ['chapterId'] : module === 'bonds' ? ['allowsMemento'] : module === 'travel' ? ['inputKeywords'] : module === 'abilities' ? ['nodeKind', 'skillTreeId', 'combatTreeId'] : [];
+        const extra = module === 'adventure' ? ['chapterId'] : module === 'bonds' ? ['allowsMemento'] : module === 'travel' ? ['inputKeywords'] : module === 'abilities' ? ['nodeKind', 'skillTreeId', 'combatTreeId', 'description'] : [];
         const rows = entries(definitions.get(module)?.[module === 'travel' ? 'locations' : 'nodes'], path,
             ['nodeId', 'nodeName', 'condition', ...(parent ? [parent] : [])],
-            ['nodeId', 'nodeName', 'condition', 'prerequisiteNodeIds', 'choiceGroupId', 'imageName', 'imageAlt', ...(parent ? [parent] : []), ...extra], issues);
+            ['nodeId', 'nodeName', 'condition', 'prerequisiteNodeIds', ...(typed ? ['dependencies', 'description'] : []), 'choiceGroupId', 'assetRef', 'imageName', 'imageAlt', ...(parent ? [parent] : []), ...extra], issues);
         rows.forEach((row, i) => {
             const nodePath = `${path}[${i}]`;
+            if (options.draft) for (const field of ['nodeName', 'condition', ...(row.nodeKind === 'combat' ? ['description'] : [])]) {
+                if (typeof row[field] !== 'string') addIssue(issues, `${nodePath}.${field}`, 'INVALID_TYPE', '草稿文字必须是字符串');
+            }
             let parentField = parent;
             if (module === 'abilities') {
                 parentField = row.nodeKind === 'skill' ? 'skillTreeId' : 'combatTreeId';
                 if (row.nodeKind !== 'skill' && row.nodeKind !== 'combat') addIssue(issues, nodePath, 'INVALID_VALUE', '能力节点须明确 skill 或 combat');
                 requireString(row[parentField], nodePath, issues);
                 if (row[row.nodeKind === 'skill' ? 'combatTreeId' : 'skillTreeId'] !== undefined) addIssue(issues, nodePath, 'INVALID_VALUE', '节点只能归属一种树');
+                if (row.nodeKind === 'combat') requireBoundedString(row.description, `${nodePath}.description`, MAX_STORED_TEXT_LENGTH, issues);
+                else if (!typed && row.description !== undefined) addIssue(issues, `${nodePath}.description`, 'UNKNOWN_FIELD', '旧目录静态介绍仅适用于怪物成就');
             }
             reference(row[parentField], indexed.get(parentField) ?? new Set(), `${nodePath}.${parentField}`, issues);
             if (module === 'adventure' && row.chapterId !== undefined) reference(row.chapterId, indexed.get('chapterId') ?? new Set(), `${nodePath}.chapterId`, issues);
@@ -184,6 +209,18 @@ export function validateContentCatalog(input: unknown): ValidationResult<Content
             if (module === 'careers' || module === 'knowledge' || (module === 'abilities' && row.nodeKind === 'skill')) taskNodeIds.add(row.nodeId);
             image(row, nodePath, issues);
             if (row.prerequisiteNodeIds !== undefined) requireStringArray(row.prerequisiteNodeIds, `${nodePath}.prerequisiteNodeIds`, issues);
+            if (typed) {
+                if (row.prerequisiteNodeIds !== undefined) addIssue(issues, nodePath, 'INVALID_VALUE', '版本 3 只写 dependencies');
+                const deps = records(row.dependencies, `${nodePath}.dependencies`, issues);
+                deps.forEach(dep => {
+                    rejectUnknownFields(dep, ['nodeId', 'kind'], nodePath, issues);
+                    requireString(dep.nodeId, `${nodePath}.dependencies.nodeId`, issues);
+                    if (dep.kind !== 'branch' && dep.kind !== 'prerequisite') addIssue(issues, nodePath, 'INVALID_VALUE', '未知依赖类型');
+                });
+                validateUniqueStrings(deps.map(dep => String(dep.nodeId)), nodePath, issues);
+                if (deps.filter(dep => dep.kind === 'branch').length > 1) addIssue(issues, nodePath, 'INVALID_VALUE', '只能有一个强父节点');
+                if (row.description !== undefined && (typeof row.description !== 'string' || row.description.length > MAX_STORED_TEXT_LENGTH)) addIssue(issues, `${nodePath}.description`, 'INVALID_TYPE', '介绍须为长度不超过 10000 的字符串');
+            }
             if (row.choiceGroupId !== undefined) requireString(row.choiceGroupId, `${nodePath}.choiceGroupId`, issues);
             if (module === 'travel') requireStringArray(row.inputKeywords, `${nodePath}.inputKeywords`, issues);
             if (row.allowsMemento !== undefined && typeof row.allowsMemento !== 'boolean') addIssue(issues, nodePath, 'INVALID_TYPE', 'allowsMemento 必须为布尔值');
@@ -192,10 +229,10 @@ export function validateContentCatalog(input: unknown): ValidationResult<Content
     }
     validateUniqueStrings(allNodes.map(row => String(row.nodeId)), 'nodes', issues);
     for (const node of allNodes) {
-        for (const id of Array.isArray(node.prerequisiteNodeIds) ? node.prerequisiteNodeIds : []) {
+        for (const id of safeDependencies(node)) {
             reference(id, new Set(nodeMap.keys()), `nodes.${String(node.nodeId)}.prerequisiteNodeIds`, issues);
-            if (nodeScope.get(id) !== nodeScope.get(node.nodeId) && !taskNodeIds.has(node.nodeId)) {
-                addIssue(issues, 'prerequisiteNodeIds', 'INVALID_VALUE', '仅技能、知识和职业任务允许跨树前置');
+            if (nodeScope.get(id) !== nodeScope.get(node.nodeId) && (!typed ? !taskNodeIds.has(node.nodeId) : branchParentId(node as unknown as BaseNodeDefinition) === id && nodeMap.has(id))) {
+                addIssue(issues, typed ? `nodes.${String(node.nodeId)}.dependencies` : 'prerequisiteNodeIds', 'INVALID_VALUE', typed ? '强父节点必须属于同一棵树' : '仅技能、知识和职业任务允许跨树前置');
             }
         }
     }
@@ -207,28 +244,32 @@ export function validateContentCatalog(input: unknown): ValidationResult<Content
         if (visiting.has(id)) { addIssue(issues, 'prerequisiteNodeIds', 'INVALID_VALUE', '前置关系存在环'); return; }
         if (visited.has(id)) return;
         visiting.add(id);
-        const deps = nodeMap.get(id)?.prerequisiteNodeIds;
-        if (Array.isArray(deps)) deps.forEach(visit);
+        safeDependencies(nodeMap.get(id)).forEach(visit);
         visiting.delete(id); visited.add(id);
     };
     nodeMap.forEach((_, id) => visit(id));
-    groupRows.get('storyTreeId')?.forEach(tree => {
+    for (const treeField of ['storyTreeId', 'combatTreeId']) groupRows.get(treeField)?.forEach(tree => {
+        if (typed && treeField === 'storyTreeId' && tree.entryNodeId !== undefined) {
+            requireString(tree.entryNodeId, `storyTrees.${String(tree.storyTreeId)}.entryNodeId`, issues);
+            if (tree.rootNodeId !== undefined) addIssue(issues, 'rootNodeId', 'INVALID_VALUE', '隐藏入口与旧根成就不能同时设置');
+            return;
+        }
         requireString(tree.rootNodeId, 'rootNodeId', issues);
         const root = nodeMap.get(tree.rootNodeId);
-        if (!root || root.storyTreeId !== tree.storyTreeId) addIssue(issues, 'rootNodeId', 'UNKNOWN_REFERENCE', '树根必须是本剧情树的节点');
-        if (Array.isArray(root?.prerequisiteNodeIds) && root.prerequisiteNodeIds.length) addIssue(issues, 'rootNodeId', 'INVALID_VALUE', '树根不能有前置');
+        if (!root || root[treeField] !== tree[treeField]) addIssue(issues, 'rootNodeId', 'UNKNOWN_REFERENCE', '树根必须是本树的节点');
+        if (typed ? root && branchParentId(root as unknown as BaseNodeDefinition) : Array.isArray(root?.prerequisiteNodeIds) && root.prerequisiteNodeIds.length) addIssue(issues, 'rootNodeId', 'INVALID_VALUE', '树根不能有强父节点');
         if (root?.choiceGroupId !== undefined) addIssue(issues, 'rootNodeId', 'INVALID_VALUE', '常显树根不能是互斥选择节点');
         const reachable = new Set([tree.rootNodeId]);
         let changed = true;
         while (changed) {
             changed = false;
-            for (const node of allNodes.filter(n => n.storyTreeId === tree.storyTreeId)) {
-                if (!reachable.has(node.nodeId) && Array.isArray(node.prerequisiteNodeIds) && node.prerequisiteNodeIds.some(id => reachable.has(id))) {
+            for (const node of allNodes.filter(n => n[treeField] === tree[treeField])) {
+                if (!reachable.has(node.nodeId) && (typed ? reachable.has(branchParentId(node as unknown as BaseNodeDefinition)) : safeDependencies(node).some(id => reachable.has(id)))) {
                     reachable.add(node.nodeId); changed = true;
                 }
             }
         }
-        if (allNodes.some(n => n.storyTreeId === tree.storyTreeId && !reachable.has(n.nodeId))) addIssue(issues, 'rootNodeId', 'INVALID_VALUE', '剧情节点必须沿前置链连接到本树树根');
+        if (allNodes.some(n => n[treeField] === tree[treeField] && !reachable.has(n.nodeId))) addIssue(issues, 'rootNodeId', 'INVALID_VALUE', '节点必须沿前置链连接到本树树根');
     });
     const choices = entries(catalog.choiceGroups, 'choiceGroups', ['choiceGroupId', 'choiceGroupName', 'module'], ['choiceGroupId', 'choiceGroupName', 'module', 'storyTreeId', 'personId'], issues);
     choices.forEach(choice => {
@@ -243,6 +284,22 @@ export function validateContentCatalog(input: unknown): ValidationResult<Content
         const field = choice?.module === 'adventure' ? 'storyTreeId' : 'personId';
         if (!choice || node[field] !== choice[field]) addIssue(issues, 'choiceGroupId', 'UNKNOWN_REFERENCE', '选择节点和互斥组的归属不一致');
     });
+    if (typed) for (const node of allNodes) {
+        const seen = new Set<unknown>(), choicesSeen = new Map<unknown, unknown>();
+        const inspect = (id: unknown): void => {
+            if (seen.has(id)) return;
+            seen.add(id);
+            const target = nodeMap.get(id);
+            if (!target) return;
+            if (target.choiceGroupId) {
+                const previous = choicesSeen.get(target.choiceGroupId);
+                if (previous && previous !== id) addIssue(issues, `nodes.${String(node.nodeId)}.dependencies`, 'INVALID_VALUE', '必需前置包含互斥节点，无法达成');
+                choicesSeen.set(target.choiceGroupId, id);
+            }
+            safeDependencies(target).forEach(inspect);
+        };
+        inspect(node.nodeId);
+    }
     const lines = entries(definitions.get('adventure')?.storyLines, 'storyLines', ['storyLineId', 'storyLineName', 'storyTreeId'], ['storyLineId', 'storyLineName', 'storyTreeId', 'endingNodeIds'], issues);
     lines.forEach(line => {
         reference(line.storyTreeId, indexed.get('storyTreeId') ?? new Set(), 'storyLines', issues);
@@ -254,10 +311,13 @@ export function validateContentCatalog(input: unknown): ValidationResult<Content
     validateUniqueStrings([
         ...Array.from(groupRows.entries()).flatMap(([field,rows]) => rows.map(row => String(row[field]))),
         ...allNodes.map(row => String(row.nodeId)),
+        ...(typed ? (groupRows.get('storyTreeId') ?? []).filter(tree => tree.entryNodeId !== undefined).map(tree => String(tree.entryNodeId)) : []),
         ...choices.map(row => String(row.choiceGroupId)), ...lines.map(row => String(row.storyLineId)),
     ], 'catalog.ids', issues);
     if (!Number.isInteger(max) || Number(max) < 20) addIssue(issues, 'maxEntryLength', 'INVALID_VALUE', '日记上限须为至少 20 的整数');
-    return validationResult<ContentCatalog>(input, issues);
+    // Drafts keep repairable author omissions and dangling references, never malformed shapes.
+    const filtered = options.draft ? issues.filter(issue => issue.code !== 'UNKNOWN_REFERENCE' && !(issue.code === 'INVALID_VALUE' && ((issue.message.startsWith('必须是非空字符串') && (/\.(nodeName|condition|description)$/.test(issue.path) || issue.path === 'rootNodeId')) || issue.message.startsWith('节点必须沿前置链')))) : issues;
+    return validationResult<ContentCatalog>(input, filtered);
 }
 
 export function validateContentLayouts(input: unknown, catalog: ContentCatalog): ValidationResult<ContentLayouts> {
@@ -270,7 +330,7 @@ export function validateContentLayouts(input: unknown, catalog: ContentCatalog):
     const m = catalog.modules;
     const scopes: Record<string, Record<string, string[]>> = {
         chapters: Object.fromEntries(m.adventure.chapters.map(c => [c.chapterId, []])),
-        storyTrees: Object.fromEntries(m.adventure.storyTrees.map(t => [t.storyTreeId, m.adventure.nodes.filter(n => n.storyTreeId === t.storyTreeId).map(n => n.nodeId)])),
+        storyTrees: Object.fromEntries(m.adventure.storyTrees.map(t => [t.storyTreeId, [...(t.entryNodeId ? [t.entryNodeId] : []), ...m.adventure.nodes.filter(n => n.storyTreeId === t.storyTreeId).map(n => n.nodeId)]])),
         bondTrees: Object.fromEntries(m.bonds.people.map(p => [p.personId, m.bonds.nodes.filter(n => n.personId === p.personId).map(n => n.nodeId)])),
         careerTrees: Object.fromEntries(m.careers.trees.map(t => [t.careerTreeId, m.careers.nodes.filter(n => n.careerTreeId === t.careerTreeId).map(n => n.nodeId)])),
         skillTrees: Object.fromEntries(m.abilities.skillTrees.map(t => [t.skillTreeId, m.abilities.nodes.filter(n => n.nodeKind === 'skill' && n.skillTreeId === t.skillTreeId).map(n => n.nodeId)])),
@@ -289,10 +349,26 @@ export function validateContentLayouts(input: unknown, catalog: ContentCatalog):
             const allowedNodes = scopes[field]?.[id];
             if (!allowedNodes) addIssue(issues, path, 'UNKNOWN_REFERENCE', '未知布局归属');
             if (!row) continue;
-            const extras = field === 'storyTrees' ? ['chapterId', 'x', 'y'] : field === 'maps' ? ['imageName', 'imageAlt'] : [];
-            rejectUnknownFields(row, ['width', 'height', ...(field === 'chapters' ? [] : ['positions']), ...extras], path, issues);
+            const extras = field === 'storyTrees' ? ['chapterId', 'x', 'y'] : field === 'maps' ? ['assetRef', 'imageName', 'imageAlt'] : field === 'combatTrees' ? ['startNewRow'] : [];
+            rejectUnknownFields(row, ['width', 'height', ...(field === 'chapters' ? [] : ['positions', 'hiddenBranchNodeIds', 'visualEdges']), ...extras], path, issues);
+            if (row.startNewRow !== undefined && typeof row.startNewRow !== 'boolean')
+                addIssue(issues, path + '.startNewRow', 'INVALID_TYPE', '分行标记必须是布尔值');
             finite(row.width, path + '.width', 1); finite(row.height, path + '.height', 1);
             if (field === 'chapters') continue;
+            if (row.hiddenBranchNodeIds !== undefined && requireStringArray(row.hiddenBranchNodeIds, path, issues)) {
+                for (const id of row.hiddenBranchNodeIds) reference(id, new Set(allowedNodes), path, issues);
+            }
+            if (row.visualEdges !== undefined) records(row.visualEdges, path, issues).forEach(edge => {
+                rejectUnknownFields(edge, ['from', 'to', 'routing', 'points'], path, issues);
+                reference(edge.from, new Set(allowedNodes), path, issues);
+                reference(edge.to, new Set(allowedNodes), path, issues);
+                if (edge.routing !== undefined && edge.routing !== 'curved' && edge.routing !== 'orthogonal') addIssue(issues, path, 'INVALID_VALUE', '未知布线样式');
+                if (Array.isArray(edge.points) && edge.points.length > 1) addIssue(issues, path, 'INVALID_VALUE', '第一版视觉连线只支持一个控制点');
+                if (edge.points !== undefined) records(edge.points, path, issues).forEach(point => {
+                    rejectUnknownFields(point, ['x', 'y'], path, issues);
+                    finite(point.x, path, 0); finite(point.y, path, 0);
+                });
+            });
             if (field === 'maps') image(row, path, issues);
             if (field === 'storyTrees') {
                 const tree = m.adventure.storyTrees.find(t => t.storyTreeId === id);
@@ -306,6 +382,8 @@ export function validateContentLayouts(input: unknown, catalog: ContentCatalog):
                 )) addIssue(issues, path, 'INVALID_VALUE', '剧情树须位于所属大章画布内');
             }
             const positions = requireRecord(row.positions, path + '.positions', issues);
+            const entryId = field === 'storyTrees' ? m.adventure.storyTrees.find(tree => tree.storyTreeId === id)?.entryNodeId : undefined;
+            if (entryId && !isRecord(positions?.[entryId])) addIssue(issues, `${path}.positions.${entryId}`, 'INVALID_TYPE', '隐藏入口必须有布局坐标');
             for (const [nodeId, pointValue] of Object.entries(positions ?? {})) {
                 if (!allowedNodes?.includes(nodeId)) addIssue(issues, path, 'UNKNOWN_REFERENCE', '坐标节点必须属于本树或地图');
                 const point = requireRecord(pointValue, path + '.positions.' + nodeId, issues);
@@ -343,8 +421,12 @@ export function validateAchievementSave(input: unknown): ValidationResult<Achiev
     const issues: ValidationIssue[] = [];
     const save = requireRecord(input, '$', issues);
     if (!save) return { ok: false, issues };
-    rejectUnknownFields(save, ['schemaVersion', 'revision', 'currentChapterId', 'nodeProgress', 'nodeTasks', 'annotationCards', 'journalEntries', 'manualCorrections', 'chapterProgress', 'retractedNodeProgress', 'processedThrough', 'appliedRequestIds', 'migrationBackup'], '$', issues);
-    if (save.schemaVersion !== 6) addIssue(issues, 'schemaVersion', 'INVALID_VALUE', '仅支持存档版本 6');
+    rejectUnknownFields(save, ['schemaVersion', 'revision', 'packId', 'packVersion', 'packHash', 'currentChapterId', 'nodeProgress', 'nodeTasks', 'annotationCards', 'journalEntries', 'manualCorrections', 'chapterProgress', 'retractedNodeProgress', 'processedThrough', 'appliedRequestIds', 'requestOutcomes', 'migrationBackup', 'orphanedProgress', 'orphanedChapters', 'packRollback'], '$', issues);
+    if (save.schemaVersion !== 7) addIssue(issues, 'schemaVersion', 'INVALID_VALUE', '仅支持存档版本 7；旧存档须经兼容加载');
+    if (save.packId !== undefined || save.packVersion !== undefined) {
+        if (!isPackKey(save.packId) || !isPackKey(save.packVersion)) addIssue(issues, 'packId/packVersion', 'INVALID_VALUE', '内容包身份须成对设置且不能含路径');
+    }
+    if (save.packHash !== undefined && (typeof save.packHash !== 'string' || !packHashPattern.test(save.packHash) || save.packId === undefined)) addIssue(issues, 'packHash', 'INVALID_VALUE', '包指纹须为 SHA-256 且已有绑定');
     requireInteger(save.revision, 'revision', issues);
     if (save.currentChapterId !== undefined) requireString(save.currentChapterId, 'currentChapterId', issues);
     const active = requireRecord(save.nodeProgress, 'nodeProgress', issues);
@@ -371,7 +453,7 @@ export function validateAchievementSave(input: unknown): ValidationResult<Achiev
         if (row.claimableAt !== undefined && row.acceptedAt === undefined) addIssue(issues, path, 'INVALID_VALUE', '待领取任务必须保留接取时间');
         if (row.claimabilityNotified !== undefined && row.claimableAt === undefined) addIssue(issues, path, 'INVALID_VALUE', '只有待领取任务可以保存领取提醒');
         if (row.completionCopy !== undefined) {
-            validateTextRecord(row.completionCopy, `${path}.completionCopy`, ['description'], issues);
+            validateTextRecord(row.completionCopy, `${path}.completionCopy`, ['description', 'memento'], issues);
             if (row.claimableAt === undefined) addIssue(issues, path, 'INVALID_VALUE', '只有待领取任务可以保存完成文案');
         }
     }
@@ -395,7 +477,7 @@ export function validateAchievementSave(input: unknown): ValidationResult<Achiev
     for (const [cardId, value] of Object.entries(cards ?? {})) {
         const path = `annotationCards.${cardId}`, card = requireRecord(value, path, issues);
         if (!card) continue;
-        rejectUnknownFields(card, ['cardId', 'nodeId', 'style', 'text', 'textOverride', 'imageName', 'imageAlt', 'sourceRefs'], path, issues);
+        rejectUnknownFields(card, ['cardId', 'nodeId', 'style', 'text', 'textOverride', 'assetRef', 'imageName', 'imageAlt', 'sourceRefs'], path, issues);
         requireString(card.cardId, path, issues); requireString(card.nodeId, path, issues);
         if (cardId !== card.cardId) addIssue(issues, path, 'INVALID_VALUE', '卡片键和 cardId 不一致');
         if (!(ANNOTATION_CARD_STYLES as readonly unknown[]).includes(card.style)) addIssue(issues, path, 'INVALID_VALUE', '未知卡片样式');
@@ -403,7 +485,8 @@ export function validateAchievementSave(input: unknown): ValidationResult<Achiev
         if (card.textOverride !== undefined) requireBoundedString(card.textOverride, path, 4000, issues);
         image(card, path, issues); validateSourceRefs(card.sourceRefs, path, issues);
     }
-    entries(save.journalEntries, 'journalEntries', ['journalId', 'origin', 'createdAt'], ['journalId', 'origin', 'createdAt', 'sourceRefs', 'generatedText', 'playerText'], issues).forEach(entry => {
+    entries(save.journalEntries, 'journalEntries', ['journalId', 'origin', 'createdAt'], ['journalId', 'origin', 'title', 'createdAt', 'sourceRefs', 'generatedText', 'playerText'], issues).forEach(entry => {
+        if (entry.title !== undefined) requireBoundedString(entry.title, 'journalEntries.title', 200, issues);
         if (entry.origin !== 'generated' && entry.origin !== 'player') addIssue(issues, 'journalEntries.origin', 'INVALID_VALUE', '未知日记来源');
         if (entry.origin === 'generated') requireString(entry.generatedText, 'generatedText', issues);
         if (entry.origin === 'player') {
@@ -435,20 +518,96 @@ export function validateAchievementSave(input: unknown): ValidationResult<Achiev
         if (cursor) { rejectUnknownFields(cursor, ['messageId', 'turnIndex'], 'processedThrough', issues); requireString(cursor.messageId, 'messageId', issues); requireInteger(cursor.turnIndex, 'turnIndex', issues); }
     });
     requireStringArray(save.appliedRequestIds, 'appliedRequestIds', issues);
+    if (save.requestOutcomes !== undefined) {
+        const outcomes = requireRecord(save.requestOutcomes, 'requestOutcomes', issues);
+        for (const [id, value] of Object.entries(outcomes ?? {})) {
+            const path = `requestOutcomes.${id}`, row = requireRecord(value, path, issues);
+            if (!row) continue;
+            rejectUnknownFields(row, ['acceptedProposalIds', 'rejectedProposals'], path, issues);
+            requireStringArray(row.acceptedProposalIds, `${path}.acceptedProposalIds`, issues);
+            entries(row.rejectedProposals, `${path}.rejectedProposals`, ['proposalId', 'reason'], ['proposalId', 'reason'], issues);
+            if (!Array.isArray(save.appliedRequestIds) || !save.appliedRequestIds.includes(id)) addIssue(issues, path, 'UNKNOWN_REFERENCE', '处理结果必须属于已处理请求');
+        }
+    }
     if (save.migrationBackup !== undefined && !validateJson(save.migrationBackup)) addIssue(issues, 'migrationBackup', 'INVALID_TYPE', '备份必须是 JSON 数据');
+    validatePackArchives(save, issues);
     return validationResult<AchievementSave>(input, issues);
 }
 
+function archiveSave(): UnknownRecord {
+    return { schemaVersion: 7, revision: 0, nodeProgress: {}, retractedNodeProgress: {}, nodeTasks: {}, annotationCards: {}, manualCorrections: {}, chapterProgress: {}, journalEntries: [], processedThrough: {}, appliedRequestIds: [] };
+}
+function archiveIdentity(row: UnknownRecord, path: string, issues: ValidationIssue[]): void {
+    const source = requireRecord(row.source, `${path}.source`, issues);
+    if (source) {
+        rejectUnknownFields(source, ['packId', 'packVersion', 'packHash'], path, issues);
+        if (!isPackKey(source.packId) || !isPackKey(source.packVersion) || typeof source.packHash !== 'string' || !packHashPattern.test(source.packHash)) addIssue(issues, path, 'INVALID_VALUE', '遗留记录来源身份无效');
+    }
+    requireString(row.archivedAt, `${path}.archivedAt`, issues);
+}
+function archivePayload(payload: UnknownRecord, path: string, issues: ValidationIssue[]): void {
+    const validated = validateAchievementSave(payload);
+    if (!validated.ok) issues.push(...validated.issues.map(issue => ({ ...issue, path: `${path}.${issue.path}` })));
+}
+function validatePackArchives(save: UnknownRecord, issues: ValidationIssue[]): void {
+    if (save.orphanedProgress !== undefined) records(save.orphanedProgress, 'orphanedProgress', issues).forEach((row, i) => {
+        const path = `orphanedProgress[${i}]`;
+        rejectUnknownFields(row, ['source', 'archivedAt', 'reason', 'nodeId', 'nodeName', 'module', 'progress', 'retractedProgress', 'task', 'correction', 'cards'], path, issues);
+        archiveIdentity(row, path, issues);
+        requireString(row.nodeId, path, issues); requireString(row.nodeName, path, issues); requireString(row.reason, path, issues);
+        if (!NODE_MODULES.includes(row.module as NodeModule)) addIssue(issues, path, 'INVALID_VALUE', '遗留节点模块无效');
+        const payload = archiveSave();
+        for (const [field, target] of [['progress', 'nodeProgress'], ['retractedProgress', 'retractedNodeProgress'], ['task', 'nodeTasks'], ['correction', 'manualCorrections']] as const) {
+            if (row[field] !== undefined) payload[target] = { [String(row.nodeId)]: row[field] };
+        }
+        const cards = records(row.cards, `${path}.cards`, issues);
+        if (cards.some(card => card.nodeId !== row.nodeId) || new Set(cards.map(card => card.cardId)).size !== cards.length) addIssue(issues, path, 'INVALID_VALUE', '遗留卡片归属或 ID 无效');
+        payload.annotationCards = Object.fromEntries(cards.map(card => [String(card.cardId), card]));
+        archivePayload(payload, path, issues);
+    });
+    if (save.orphanedChapters !== undefined) records(save.orphanedChapters, 'orphanedChapters', issues).forEach((row, i) => {
+        const path = `orphanedChapters[${i}]`;
+        rejectUnknownFields(row, ['source', 'archivedAt', 'chapterId', 'chapterName', 'progress', 'wasCurrent'], path, issues);
+        archiveIdentity(row, path, issues);
+        requireString(row.chapterId, path, issues); requireString(row.chapterName, path, issues);
+        if (typeof row.wasCurrent !== 'boolean') addIssue(issues, path, 'INVALID_TYPE', '章节当前状态须为布尔值');
+        const payload = archiveSave();
+        if (row.progress !== undefined) payload.chapterProgress = { [String(row.chapterId)]: row.progress };
+        archivePayload(payload, path, issues);
+    });
+    if (save.packRollback !== undefined) {
+        const rollback = requireRecord(save.packRollback, 'packRollback', issues);
+        if (!rollback) return;
+        rejectUnknownFields(rollback, ['savedAt', 'snapshot'], 'packRollback', issues);
+        requireString(rollback.savedAt, 'packRollback.savedAt', issues);
+        const snapshot = requireRecord(rollback.snapshot, 'packRollback.snapshot', issues);
+        if (!snapshot) return;
+        if (snapshot.packRollback !== undefined) addIssue(issues, 'packRollback.snapshot', 'INVALID_VALUE', '恢复快照不能嵌套恢复快照');
+        else archivePayload(snapshot, 'packRollback.snapshot', issues);
+        if (snapshot.packId === undefined || snapshot.packHash === undefined) addIssue(issues, 'packRollback.snapshot', 'INVALID_VALUE', '恢复快照须有完整包身份');
+        if (snapshot.packId !== save.packId || snapshot.packVersion === save.packVersion) addIssue(issues, 'packRollback.snapshot', 'INVALID_VALUE', '恢复快照必须属于同一内容包的另一版本');
+    }
+}
+
 export function loadAchievementSave(input: unknown, catalog?: ContentCatalog): ValidationResult<AchievementSave> {
-    if (!isRecord(input) || input.schemaVersion === 6) return validateAchievementSave(input);
-    if (input.schemaVersion === 5) {
+    if (!isRecord(input) || input.schemaVersion === 7) return validateAchievementSave(input);
+    if (input.schemaVersion === 5 || input.schemaVersion === 6) {
+        // Validate the old field whitelist before adding binding fields; preserve the original for rollback.
+        const issues: ValidationIssue[] = [];
+        rejectUnknownFields(input, ['schemaVersion', 'revision', 'currentChapterId', 'nodeProgress', 'nodeTasks', 'annotationCards', 'journalEntries', 'manualCorrections', 'chapterProgress', 'retractedNodeProgress', 'processedThrough', 'appliedRequestIds', 'requestOutcomes', 'migrationBackup'], '$', issues);
+        if (issues.length) return { ok: false, issues };
         const migrated = structuredClone(input);
-        migrated.schemaVersion = 6;
+        migrated.schemaVersion = 7;
+        migrated.migrationBackup ??= structuredClone(input);
         return validateAchievementSave(migrated);
     }
     if (input.schemaVersion === 4) {
+        const issues: ValidationIssue[] = [];
+        rejectUnknownFields(input, ['schemaVersion', 'revision', 'currentChapterId', 'nodeProgress', 'annotationCards', 'journalEntries', 'manualCorrections', 'chapterProgress', 'retractedNodeProgress', 'processedThrough', 'appliedRequestIds', 'migrationBackup'], '$', issues);
+        if (issues.length) return { ok: false, issues };
         const migrated = structuredClone(input);
-        migrated.schemaVersion = 6;
+        migrated.schemaVersion = 7;
+        migrated.migrationBackup ??= structuredClone(input);
         migrated.nodeTasks = {};
         return validateAchievementSave(migrated);
     }
@@ -457,7 +616,7 @@ export function loadAchievementSave(input: unknown, catalog?: ContentCatalog): V
     const migrated = structuredClone(input);
     const issues: ValidationIssue[] = [];
     rejectUnknownFields(input, ['schemaVersion', 'revision', 'nodeProgress', 'annotationCards', 'journalEntries', 'manualCorrections', 'processedThrough', 'appliedRequestIds'], '$', issues);
-    migrated.schemaVersion = 6;
+    migrated.schemaVersion = 7;
     migrated.migrationBackup = structuredClone(input);
     migrated.chapterProgress = {};
     migrated.nodeTasks = {};
@@ -550,7 +709,7 @@ export function loadAchievementSave(input: unknown, catalog?: ContentCatalog): V
     }
     if (catalog) {
         for (const node of definitions.filter(node => progress?.[node.nodeId])) {
-            if (node.prerequisiteNodeIds?.some(id => !progress?.[id])) addIssue(issues, node.nodeId, 'INVALID_VALUE', '旧达成记录缺少新目录要求的前置，需人工核对；不自动补亮或删除旧成就');
+            if (prerequisiteIds(node).some(id => !progress?.[id])) addIssue(issues, node.nodeId, 'INVALID_VALUE', '旧达成记录缺少新目录要求的前置，需人工核对；不自动补亮或删除旧成就');
         }
         const reachedChapters = catalog.modules.adventure.nodes
             .filter(node => progress?.[node.nodeId])
@@ -566,7 +725,8 @@ function validateResponseIdentity(response: UnknownRecord, context: ResponseVali
     if (response.schemaVersion !== 1) addIssue(issues, 'schemaVersion', 'INVALID_VALUE', '仅支持版本 1');
     if (response.requestId !== context.requestId) addIssue(issues, 'requestId', 'REQUEST_MISMATCH', '响应不属于当前请求');
     if (response.chatId !== context.chatId) addIssue(issues, 'chatId', 'REQUEST_MISMATCH', '响应不属于当前聊天');
-    if (response.baseRevision !== context.stateRevision) addIssue(issues, 'baseRevision', 'STALE_RESPONSE', '存档版本已变化');
+    // Refactoring guide stage A: revision is descriptive; latest-state Domain checks guard commits.
+    requireInteger(response.baseRevision, 'baseRevision', issues);
     requireString(response.judgementSummary, 'judgementSummary', issues);
 }
 
@@ -596,9 +756,10 @@ function validateUnlockProposal(update: UnknownRecord, path: string, issues: Val
 }
 
 function validateJournalProposal(update: UnknownRecord, path: string, issues: ValidationIssue[]): void {
-    rejectUnknownFields(update, ['type', 'proposalId', 'module', 'text'], path, issues);
+    rejectUnknownFields(update, ['type', 'proposalId', 'module', 'text', 'title'], path, issues);
     if (update.module !== 'journal') addIssue(issues, `${path}.module`, 'INVALID_VALUE', '日记追加操作必须属于 journal');
     requireString(update.text, `${path}.text`, issues);
+    if (update.title !== undefined) requireBoundedString(update.title, `${path}.title`, 200, issues);
 }
 
 function validateProposal(input: unknown, index: number, context: ResponseValidationContext, issues: ValidationIssue[]): UnknownRecord | undefined {
@@ -625,5 +786,17 @@ export function validateChildApiResponse(input: unknown, context: ResponseValida
         return proposal ? [proposal] : [];
     });
     validateUniqueStrings(proposals.flatMap((proposal) => typeof proposal.proposalId === 'string' ? [proposal.proposalId] : []), 'updates.proposalId', issues);
+    validateUniqueStrings(proposals.filter(p => p.type === 'unlockNode').map(p => String(p.nodeId)), 'updates.nodeId', issues);
+    const combatIds = new Set(context.combatCandidateNodeIds ?? []);
+    const counts = new Map<unknown, number>();
+    for (const proposal of proposals) {
+        if (proposal.type === 'unlockNode' && proposal.module === 'abilities' && combatIds.has(String(proposal.nodeId))) {
+            if (proposal.copy !== undefined) addIssue(issues, 'updates.copy', 'UNKNOWN_FIELD', '怪物介绍来自静态目录，不能返回 copy');
+            continue;
+        }
+        const count = (counts.get(proposal.module) ?? 0) + 1;
+        counts.set(proposal.module, count);
+        if (count > 1) addIssue(issues, 'updates', 'INVALID_VALUE', `模块 ${String(proposal.module)} 超过一条更新。`);
+    }
     return validationResult<ChildApiResponse>(input, issues);
 }

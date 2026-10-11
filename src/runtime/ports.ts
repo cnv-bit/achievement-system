@@ -1,3 +1,10 @@
+import type { ContentPackBinding } from '../domain/types.ts';
+import type { LoadedContentPack } from './content-pack.ts';
+
+export interface ContentPackPort {
+  load(binding: ContentPackBinding): Promise<LoadedContentPack>;
+}
+
 export type JsonPrimitive = boolean | number | string | null;
 export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
 

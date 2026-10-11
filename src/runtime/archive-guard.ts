@@ -30,11 +30,11 @@ export function createRequestTicket(
   chatId: string,
   messages: RuntimeChatMessage[],
   moduleIds: ContentModule[],
-  requestMaterial?: unknown,
+  options: { material?: unknown; intentId?: string } = {},
 ): RequestTicket {
   const sortedModules = [...moduleIds].sort();
   const sourceFingerprint = messageFingerprint(messages);
-  const requestId = `goblin-${fnv1a64(JSON.stringify([chatId, sourceFingerprint, sortedModules, ...(requestMaterial === undefined ? [] : [requestMaterial])]))}`;
+  const requestId = `goblin-${fnv1a64(JSON.stringify([chatId, sourceFingerprint, sortedModules, options.material ?? null, options.intentId ?? null]))}`;
   return { requestId, chatId, sourceFingerprint, moduleIds: sortedModules };
 }
 

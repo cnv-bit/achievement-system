@@ -8,12 +8,9 @@ import {
   type WorldbookBindings,
 } from './model.ts';
 import { SettingsRepository } from './storage.ts';
-import type { BackendSecrets } from './backend.ts';
+import type { ApiSettingsPort, SecretsPort, SettingsSnapshot } from './ports.ts';
 
-export interface SettingsSnapshot {
-  settings: RuntimeSettings;
-  hasTextApiKey: boolean;
-}
+export type { SettingsSnapshot } from './ports.ts';
 
 function textConnection(config: TextApiConfig, apiKey: string): TextGenerationRequest['connection'] {
   return {
@@ -26,17 +23,17 @@ function textConnection(config: TextApiConfig, apiKey: string): TextGenerationRe
   };
 }
 
-export class ApiSettingsController {
+export class ApiSettingsController implements ApiSettingsPort {
   private readonly repository: SettingsRepository;
   private readonly generation: TextGenerationPort;
-  private readonly secrets: BackendSecrets;
+  private readonly secrets: SecretsPort;
   private readonly worldbooks: WorldbookPort | undefined;
   private hasTextApiKey = false;
 
   constructor(
     repository: SettingsRepository,
     generation: TextGenerationPort,
-    secrets: BackendSecrets,
+    secrets: SecretsPort,
     worldbooks?: WorldbookPort,
   ) {
     this.repository = repository;

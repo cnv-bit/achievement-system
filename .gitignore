@@ -5,6 +5,9 @@ node_modules/
 .npm-cache/
 dist/plugin/
 dist/*.js
+dist/*.mjs
+src/frontend/.preview/
+experiments/
 experiments/*.png
 .env
 .env.*

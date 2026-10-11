@@ -1,13 +1,17 @@
-import fs from 'node:fs';
 import path from 'node:path';
 import { build } from 'esbuild';
+import { readJournalCss } from './journal-css.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
-const cssPath = path.join(root, 'src', 'frontend', 'journal.css');
-const css = fs.readFileSync(cssPath, 'utf8').replace(/url\('\.\/assets\/([^']+)'\)/g, (_, file) => {
-  const bytes = fs.readFileSync(path.join(path.dirname(cssPath), 'assets', file));
-  const mime = file.endsWith('.svg') ? 'image/svg+xml' : 'application/octet-stream';
-  return `url("data:${mime};base64,${bytes.toString('base64')}")`;
+const css = readJournalCss(root);
+
+await build({
+  entryPoints: [path.join(root, 'src', 'server', 'index.mjs')],
+  bundle: true,
+  format: 'esm',
+  platform: 'node',
+  target: 'node22',
+  outfile: path.join(root, 'dist', 'goblin-achievements-server.mjs'),
 });
 
 await build({

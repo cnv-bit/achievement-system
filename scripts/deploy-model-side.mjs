@@ -14,6 +14,11 @@ const parserPath = path.join(path.resolve(tavernArgument), 'src', 'character-car
 if (path.extname(target).toLowerCase() !== '.png') throw new Error('角色卡目标必须是 PNG 文件。');
 const scriptId = '7a264b34-199d-4cff-8f9b-109dbac46732';
 const scriptName = '成就系统｜模型侧';
+const args = process.argv.slice(4);
+const replaceDefault = args[2] === '--replace-default-pack';
+if (args.length && (args[0] !== '--content-pack-release' || (args.length !== 2 && !(args.length === 3 && replaceDefault)))) {
+  throw new Error('Usage: node scripts/deploy-model-side.mjs <character.png> <SillyTavern-root> [--content-pack-release <release-dir> [--replace-default-pack]]');
+}
 
 for (const requiredPath of [target, bundle, parserPath]) {
   if (!fs.existsSync(requiredPath)) throw new Error(`缺少部署文件：${requiredPath}`);
@@ -23,6 +28,18 @@ const parser = await import(pathToFileURL(parserPath).href);
 const originalImage = fs.readFileSync(target);
 const card = JSON.parse(parser.read(originalImage));
 const extensions = card.data.extensions ??= {};
+let packBinding;
+if (args.length) {
+  const { validatePackBinding } = await import('../src/domain/content-pack.ts');
+  const { readReleaseDirectory } = await import('../src/server/content-packs.mjs');
+  const manifest = JSON.parse(fs.readFileSync(path.join(args[1], 'manifest.json'), 'utf8'));
+  packBinding = validatePackBinding({ packId: manifest.packId, packVersion: manifest.packVersion });
+  await readReleaseDirectory(args[1], packBinding);
+  const configuration = extensions.goblin_achievements ??= {};
+  if (!replaceDefault && configuration.contentPack !== undefined) assert.deepEqual(configuration.contentPack, packBinding, 'Refusing an implicit change to the existing pack binding.');
+  configuration.contentPack = packBinding;
+  configuration.legacyContentPack ??= packBinding;
+}
 const tavernHelper = extensions.tavern_helper ??= { scripts: [], variables: {} };
 let scripts;
 if (Array.isArray(tavernHelper)) {
@@ -71,6 +88,7 @@ fs.copyFileSync(target, backup);
 fs.writeFileSync(target, nextImage);
 
 const deployed = JSON.parse(parser.read(fs.readFileSync(target)));
+assert.deepEqual(deployed, card, 'Deployed card metadata must match the verified result.');
 const deployedHelper = deployed.data.extensions.tavern_helper;
 const deployedScripts = Array.isArray(deployedHelper)
   ? deployedHelper.find(entry => Array.isArray(entry) && entry[0] === 'scripts')?.[1]
@@ -89,5 +107,6 @@ console.log(JSON.stringify({
   bundleBytes: Buffer.byteLength(content),
   bundleSha256: crypto.createHash('sha256').update(content).digest('hex'),
   scriptCount: deployedScripts.length,
-  changedFields: existingIndex >= 0 ? ['模型侧脚本.content'] : ['新增模型侧脚本'],
+  packBinding,
+  changedFields: [existingIndex >= 0 ? '模型侧脚本.content' : '新增模型侧脚本', ...(packBinding ? ['默认内容包绑定（旧存档映射保留）'] : [])],
 }, null, 2));
